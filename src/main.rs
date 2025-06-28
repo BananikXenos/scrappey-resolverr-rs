@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{debug, error, info, warn};
+use log::error;
 use transparent::TransparentChild;
 
 mod browser;

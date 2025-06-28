@@ -6,7 +6,7 @@ use axum::{
     response::Json as ResponseJson,
     routing::{get, post},
 };
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thirtyfour::Cookie;
