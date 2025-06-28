@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     bridge.bind("0.0.0.0:8080".parse()?).await?;
     tokio::spawn(async move {
         if let Err(e) = bridge.serve().await {
-            eprintln!("Error running proxy bridge: {}", e);
+            eprintln!("Error running proxy bridge: {e}");
         }
     });
 
@@ -57,8 +57,8 @@ async fn main() -> Result<()> {
         .parse::<u16>()
         .unwrap_or(8191);
 
-    let addr = format!("{}:{}", host, port);
-    println!("FlareSolverr starting on {}", addr);
+    let addr = format!("{host}:{port}");
+    println!("FlareSolverr starting on {addr}");
 
     // Create FlareSolverr API instance
     let api = FlareSolverrAPI::new(FlareSolverrConfig {

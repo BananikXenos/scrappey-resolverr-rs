@@ -167,11 +167,11 @@ impl Browser {
     fn clean_expired_cookies(&mut self) {
         let now = chrono::Utc::now().timestamp();
         self.data.cookies.retain(|cookie| {
-            if let Some(expiry) = cookie.expiry {
-                if expiry <= now {
-                    println!("Removing expired cookie: {:?}", cookie);
-                    return false;
-                }
+            if let Some(expiry) = cookie.expiry
+                && expiry <= now
+            {
+                println!("Removing expired cookie: {cookie:?}");
+                return false;
             }
             true
         });
@@ -215,7 +215,7 @@ impl Browser {
                 Ok(None)
             }
             Err(e) => {
-                println!("Failed to handle Cloudflare challenge: {}", e);
+                println!("Failed to handle Cloudflare challenge: {e}");
                 // we can close the driver here, but we will try to resolve with Scrappey
                 driver.clone().quit().await?;
                 self.fallback_to_scrappey(url, (timeout / 3) * 2).await
@@ -256,7 +256,7 @@ impl Browser {
         println!("Scrappey resolved the challenge successfully.");
 
         // Print debug information
-        println!("Scrappey response: {:?}", response);
+        println!("Scrappey response: {response:?}");
 
         // Update cookies from Scrappey response
         for cookie in response.solution.cookies.unwrap() {

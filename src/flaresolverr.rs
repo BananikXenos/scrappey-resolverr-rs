@@ -188,7 +188,7 @@ async fn v1_handler(
         .unwrap()
         .as_millis() as u64;
 
-    println!("Incoming request => POST /v1 body: {:?}", request);
+    println!("Incoming request => POST /v1 body: {request:?}");
 
     let result = handle_v1_request(request, config).await;
 
@@ -212,7 +212,7 @@ async fn v1_handler(
         Err(error_msg) => {
             let error_response = V1Response {
                 status: STATUS_ERROR.to_string(),
-                message: format!("Error: {}", error_msg),
+                message: format!("Error: {error_msg}"),
                 start_timestamp,
                 end_timestamp,
                 version: FLARESOLVERR_VERSION.to_string(),
@@ -221,7 +221,7 @@ async fn v1_handler(
                 sessions: None,
             };
 
-            println!("Error: {}", error_msg);
+            println!("Error: {error_msg}");
             Ok(ResponseJson(error_response))
         }
     }
@@ -294,7 +294,7 @@ async fn handle_request_get(
 
     // Try to load browser data if available
     if let Err(e) = browser.load_data(&config.data_path) {
-        println!("Failed to load browser data, starting fresh: {}", e);
+        println!("Failed to load browser data, starting fresh: {e}");
     }
 
     // Navigate to the URL
@@ -302,7 +302,7 @@ async fn handle_request_get(
         Ok(response) => {
             // Save browser data after navigation
             if let Err(e) = browser.save_data(&config.data_path) {
-                println!("Failed to save browser data: {}", e);
+                println!("Failed to save browser data: {e}");
             }
 
             // Convert browser response to FlareSolverr format
@@ -337,10 +337,10 @@ async fn handle_request_get(
         Err(e) => {
             // Save browser data even on error
             if let Err(save_err) = browser.save_data(&config.data_path) {
-                println!("Failed to save browser data: {}", save_err);
+                println!("Failed to save browser data: {save_err}");
             }
 
-            Err(format!("Error solving the challenge: {}", e))
+            Err(format!("Error solving the challenge: {e}"))
         }
     }
 }

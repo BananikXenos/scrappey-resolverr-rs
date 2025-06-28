@@ -65,7 +65,7 @@ impl HttpProxyBridge {
     /// Bind the proxy server to the specified address
     pub async fn bind(&mut self, addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        println!("HTTP proxy bridge bound to {}", addr);
+        println!("HTTP proxy bridge bound to {addr}");
         println!(
             "Forwarding to HTTP proxy at {}:{}",
             self.config.http_proxy_addr, self.config.http_proxy_port
@@ -87,12 +87,12 @@ impl HttpProxyBridge {
                     let config = Arc::clone(&self.config);
                     tokio::spawn(async move {
                         if let Err(e) = handle_client(stream, addr, config).await {
-                            println!("Error handling client {}: {}", addr, e);
+                            println!("Error handling client {addr}: {e}");
                         }
                     });
                 }
                 Err(e) => {
-                    println!("Failed to accept connection: {}", e);
+                    println!("Failed to accept connection: {e}");
                 }
             }
         }
@@ -121,7 +121,7 @@ async fn handle_client(
     client_addr: SocketAddr,
     config: Arc<ProxyConfig>,
 ) -> Result<()> {
-    println!("New client connection from {}", client_addr);
+    println!("New client connection from {client_addr}");
 
     let mut reader = BufReader::new(client_stream);
     let mut request_line = String::new();
@@ -155,19 +155,19 @@ async fn handle_connect_method(
     target: &str,
     config: Arc<ProxyConfig>,
 ) -> Result<()> {
-    println!("Handling CONNECT to {}", target);
+    println!("Handling CONNECT to {target}");
 
     // Connect to the downstream HTTP proxy
     let mut proxy_stream = connect_to_downstream_proxy(&config).await?;
 
     // --- Send CONNECT request to the downstream proxy ---
-    let mut connect_request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n", target, target);
+    let mut connect_request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
 
     // Add authentication header if configured
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
-        let credentials = format!("{}:{}", username, password);
+        let credentials = format!("{username}:{password}");
         let encoded = general_purpose::STANDARD.encode(credentials);
-        connect_request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
+        connect_request.push_str(&format!("Proxy-Authorization: Basic {encoded}\r\n"));
     }
 
     connect_request.push_str("Connection: close\r\n\r\n"); // End of headers
@@ -253,9 +253,9 @@ async fn handle_regular_method(
     }
 
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
-        let credentials = format!("{}:{}", username, password);
+        let credentials = format!("{username}:{password}");
         let encoded = general_purpose::STANDARD.encode(credentials);
-        let auth_header = format!("Proxy-Authorization: Basic {}\r\n", encoded);
+        let auth_header = format!("Proxy-Authorization: Basic {encoded}\r\n");
         proxy_stream.write_all(auth_header.as_bytes()).await?;
     }
 
@@ -281,12 +281,12 @@ async fn forward_streams(client_stream: TcpStream, proxy_stream: TcpStream) -> R
     tokio::select! {
         result = client_to_proxy => {
             if let Err(e) = result {
-                println!("Client to proxy forwarding ended: {}", e);
+                println!("Client to proxy forwarding ended: {e}");
             }
         }
         result = proxy_to_client => {
             if let Err(e) = result {
-                println!("Proxy to client forwarding ended: {}", e);
+                println!("Proxy to client forwarding ended: {e}");
             }
         }
     }
