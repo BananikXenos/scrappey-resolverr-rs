@@ -287,26 +287,14 @@ async fn handle_regular_method(
 
 /// Forward data bidirectionally between two streams (client <-> proxy).
 /// Used for both CONNECT tunnels and regular HTTP requests.
-async fn forward_streams(client_stream: TcpStream, proxy_stream: TcpStream) -> Result<()> {
-    let (mut client_read, mut client_write) = tokio::io::split(client_stream);
-    let (mut proxy_read, mut proxy_write) = tokio::io::split(proxy_stream);
-
-    let client_to_proxy = tokio::io::copy(&mut client_read, &mut proxy_write);
-    let proxy_to_client = tokio::io::copy(&mut proxy_read, &mut client_write);
-
-    tokio::select! {
-        result = client_to_proxy => {
-            if let Err(e) = result {
-                log::warn!("Client to proxy forwarding ended: {e}");
-            }
-        }
-        result = proxy_to_client => {
-            if let Err(e) = result {
-                log::warn!("Proxy to client forwarding ended: {e}");
-            }
+async fn forward_streams(mut client_stream: TcpStream, mut proxy_stream: TcpStream) -> Result<()> {
+    match tokio::io::copy_bidirectional(&mut client_stream, &mut proxy_stream).await {
+        Ok((_client_to_proxy, _proxy_to_client)) => Ok(()),
+        Err(e) => {
+            log::warn!("Bidirectional forwarding ended with error: {e}");
+            Err(e.into())
         }
     }
-    Ok(())
 }
 
 /// Establish a raw TCP connection to the downstream proxy.

@@ -259,7 +259,7 @@ impl Browser {
             )
         };
 
-        info!("Attempting to resolve challenge with Scrappey...");
+        info!("Attempting to resolve challenge with Scrappey... (this may take 20-40 seconds)");
 
         let response = challenge::cloudflare::scrappey_resolve(
             url.to_string(),
