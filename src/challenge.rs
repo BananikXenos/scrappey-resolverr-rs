@@ -1,6 +1,8 @@
+/// DDoS-Guard challenge detection and handling logic.
 pub mod ddos_guard {
     use anyhow::Result;
 
+    /// Returns true if the current page is protected by DDoS-Guard.
     pub async fn is_protected(driver: &mut thirtyfour::WebDriver) -> bool {
         driver
             .title()
@@ -8,6 +10,7 @@ pub mod ddos_guard {
             .is_ok_and(|title| title.contains("DDoS-Guard"))
     }
 
+    /// Waits for the DDoS-Guard challenge to be solved, or times out.
     pub async fn handle_challenge(driver: &mut thirtyfour::WebDriver, timeout: u64) -> Result<()> {
         let start_time = std::time::Instant::now();
         while is_protected(driver).await {
@@ -21,6 +24,7 @@ pub mod ddos_guard {
     }
 }
 
+/// Cloudflare challenge detection, handling, and fallback logic.
 pub mod cloudflare {
 
     use anyhow::Result;
@@ -28,6 +32,7 @@ pub mod cloudflare {
 
     use crate::scrappey::{ScrappeyClient, ScrappeyGetRequest, ScrappeyResponse};
 
+    /// Returns true if the current page is protected by a Cloudflare challenge.
     pub async fn is_protected(driver: &mut WebDriver) -> bool {
         driver
             .title()
@@ -35,6 +40,7 @@ pub mod cloudflare {
             .is_ok_and(|title| title.contains("Just a moment..."))
     }
 
+    /// Waits for the Cloudflare challenge to be solved, or times out.
     pub async fn handle_challenge(driver: &mut WebDriver, timeout: u64) -> Result<()> {
         let start_time = std::time::Instant::now();
         while is_protected(driver).await {
@@ -47,6 +53,7 @@ pub mod cloudflare {
         Ok(())
     }
 
+    /// Fallback: Use Scrappey API to resolve Cloudflare challenge if browser automation fails.
     pub async fn scrappey_resolve(
         url: String,
         api_key: String,

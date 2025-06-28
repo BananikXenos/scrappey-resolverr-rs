@@ -5,7 +5,8 @@ use thirtyfour::{Proxy, extensions::cdp::ChromeDevTools, prelude::*};
 
 use crate::challenge::{self, ddos_guard};
 
-// Configuration extracted to eliminate hard-coded values
+/// Configuration for browser automation, extracted to avoid hard-coded values.
+/// Allows flexible setup for WebDriver, proxy, and Scrappey integration.
 #[derive(Debug, Clone)]
 pub struct BrowserConfig {
     pub webdriver_url: String,
@@ -31,6 +32,8 @@ impl Default for BrowserConfig {
     }
 }
 
+/// Stores browser session data such as user agent and cookies.
+/// This struct is serializable for persistence between runs.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BrowserData {
     pub user_agent: String,
@@ -46,6 +49,7 @@ impl Default for BrowserData {
     }
 }
 
+/// Represents the result of a browser navigation, including page content and cookies.
 pub struct Response {
     pub url: String,
     pub status: u16,
@@ -54,12 +58,14 @@ pub struct Response {
     pub user_agent: String,
 }
 
+/// Main browser automation struct, encapsulating session data and configuration.
 pub struct Browser {
     pub data: BrowserData,
     pub config: BrowserConfig,
 }
 
 impl Browser {
+    /// Create a new browser instance with default config and data.
     pub fn new() -> Self {
         Browser {
             data: BrowserData::default(),
@@ -67,11 +73,13 @@ impl Browser {
         }
     }
 
+    /// Set a custom configuration for the browser.
     pub fn with_config(mut self, config: BrowserConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// Load browser session data (user agent, cookies) from a JSON file.
     pub fn load_data(&mut self, path: &str) -> Result<()> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
@@ -79,13 +87,15 @@ impl Browser {
         Ok(())
     }
 
+    /// Save browser session data (user agent, cookies) to a JSON file.
     pub fn save_data(&self, path: &str) -> Result<()> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, &self.data)?;
         Ok(())
     }
 
-    // Main navigation method - now much cleaner and focused
+    /// Main navigation method: launches a browser, navigates to the URL, handles challenges, and extracts the response.
+    /// Ensures the driver is always quit, even on error.
     pub async fn get(&mut self, url: &str, timeout: u64) -> Result<Response> {
         let mut driver = self.setup_driver().await?;
 
@@ -94,6 +104,7 @@ impl Browser {
             self.configure_cookies(&driver).await?;
             driver.get(url).await?;
 
+            // Handle anti-bot challenges if present
             if let Some(response) = self.handle_challenges(&mut driver, url, timeout).await? {
                 return Ok(response);
             }
@@ -106,9 +117,7 @@ impl Browser {
         // Always attempt to quit the driver, even if result is Err
         let quit_result = driver.quit().await;
 
-        // If the main logic errored, return that error
-        // Otherwise, if quitting the driver errored, return that error
-        // Otherwise, return the successful response
+        // Return the first error encountered, or the successful response
         match (result, quit_result) {
             (Ok(response), Ok(_)) => Ok(response),
             (Err(e), _) => Err(e),
@@ -116,7 +125,7 @@ impl Browser {
         }
     }
 
-    // Broken out methods for specific responsibilities
+    /// Set up a new Chrome WebDriver instance with configured capabilities and proxy.
     async fn setup_driver(&self) -> Result<WebDriver> {
         let mut caps = DesiredCapabilities::chrome();
         caps.set_no_sandbox()?;
@@ -130,7 +139,7 @@ impl Browser {
         caps.add_arg("--disable-infobars")?;
         caps.insert_browser_option("excludeSwitches", ["enable-automation"])?;
 
-        // Configure proxy to our local noauth http to auth http bridge
+        // Always use the local proxy bridge (noauth) for outgoing requests
         caps.set_proxy(Proxy::Manual {
             ftp_proxy: None,
             http_proxy: Some("127.0.0.1:8080".to_string()),
@@ -146,11 +155,11 @@ impl Browser {
         Ok(driver)
     }
 
+    /// Set cookies in the browser using Chrome DevTools Protocol.
+    /// Cleans expired cookies before setting.
     async fn configure_cookies(&mut self, driver: &WebDriver) -> Result<()> {
-        // Clean expired cookies first
         self.clean_expired_cookies();
 
-        // Set cookies using Chrome DevTools
         let dev_tools = ChromeDevTools::new(driver.handle.clone());
         dev_tools.execute_cdp("Network.enable").await?;
 
@@ -165,6 +174,7 @@ impl Browser {
         Ok(())
     }
 
+    /// Remove expired cookies from the session data.
     fn clean_expired_cookies(&mut self) {
         let now = chrono::Utc::now().timestamp();
         self.data.cookies.retain(|cookie| {
@@ -178,19 +188,21 @@ impl Browser {
         });
     }
 
+    /// Detect and handle anti-bot challenges (DDoS Guard, Cloudflare).
+    /// Returns a Response if solved by fallback, otherwise None.
     async fn handle_challenges(
         &mut self,
         driver: &mut WebDriver,
         url: &str,
         timeout: u64,
     ) -> Result<Option<Response>> {
-        // Handle DDoS Guard challenge
+        // Handle DDoS Guard challenge if detected
         if ddos_guard::is_protected(driver).await {
             info!("DDoS Guard challenge detected, handling...");
             ddos_guard::handle_challenge(driver, timeout).await?;
         }
 
-        // Handle Cloudflare challenge
+        // Handle Cloudflare challenge if detected
         if challenge::cloudflare::is_protected(driver).await {
             info!("Cloudflare challenge detected, handling...");
             if let Some(response) = self
@@ -204,6 +216,7 @@ impl Browser {
         Ok(None)
     }
 
+    /// Attempt to solve Cloudflare challenge, falling back to Scrappey if needed.
     async fn handle_cloudflare_challenge(
         &mut self,
         driver: &mut WebDriver,
@@ -217,19 +230,21 @@ impl Browser {
             }
             Err(e) => {
                 warn!("Failed to handle Cloudflare challenge: {e}");
-                // we can close the driver here, but we will try to resolve with Scrappey
+                // If challenge fails, close driver and try Scrappey fallback
                 driver.clone().quit().await?;
                 self.fallback_to_scrappey(url, timeout).await
             }
         }
     }
 
+    /// Use Scrappey API as a fallback to solve anti-bot challenges.
+    /// Updates cookies and user agent from Scrappey response.
     async fn fallback_to_scrappey(&mut self, url: &str, timeout: u64) -> Result<Option<Response>> {
         if self.config.scrappey_api_key.is_empty() {
             return Err(anyhow::anyhow!("Scrappey API key not configured"));
         }
 
-        // create a proxy string for Scrappey, if username and password are provided also include them
+        // Build proxy string for Scrappey, including credentials if present
         let proxy = if let (Some(username), Some(password)) =
             (&self.config.proxy_username, &self.config.proxy_password)
         {
@@ -255,8 +270,6 @@ impl Browser {
         .await?;
 
         info!("Scrappey resolved the challenge successfully.");
-
-        // Print debug information
         debug!("Scrappey response: {response:?}");
 
         // Update cookies from Scrappey response
@@ -281,6 +294,7 @@ impl Browser {
         }))
     }
 
+    /// Extract the final response from the browser, including cookies and page source.
     async fn extract_response(&mut self, driver: &WebDriver, url: &str) -> Result<Response> {
         let dev_tools = ChromeDevTools::new(driver.handle.clone());
 

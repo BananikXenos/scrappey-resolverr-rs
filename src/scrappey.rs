@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+//! Scrappey API client and data structures for integrating with the Scrappey challenge-solving service.
+//! Provides GET/POST request wrappers, balance checking, and conversion utilities for cookies.
+
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -7,6 +10,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use thirtyfour::{Cookie, SameSite};
 
+/// Client for interacting with the Scrappey API.
 #[derive(Debug, Clone)]
 pub struct ScrappeyClient {
     api_key: String,
@@ -15,6 +19,7 @@ pub struct ScrappeyClient {
 }
 
 impl ScrappeyClient {
+    /// Create a new ScrappeyClient with the given API key.
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -23,7 +28,7 @@ impl ScrappeyClient {
         }
     }
 
-    /// Check remaining balance (number of requests left)
+    /// Check remaining balance (number of requests left) on the Scrappey account.
     pub async fn get_balance(&self, timeout: u64) -> Result<ScrappeyBalance> {
         let resp = self
             .client
@@ -37,7 +42,7 @@ impl ScrappeyClient {
             .map_err(|e| anyhow::anyhow!("Failed to parse balance response: {}", e))
     }
 
-    /// Make a GET request via Scrappey
+    /// Make a GET request via Scrappey, using the provided parameters and timeout.
     pub async fn get(&self, req: ScrappeyGetRequest, timeout: u64) -> Result<ScrappeyResponse> {
         let mut payload = serde_json::to_value(&req)?.as_object().unwrap().clone();
         payload.insert("cmd".to_string(), Value::String("request.get".to_string()));
@@ -54,7 +59,7 @@ impl ScrappeyClient {
             .map_err(|e| anyhow::anyhow!("Failed to parse Scrappey response: {}", e))
     }
 
-    /// Make a POST request via Scrappey
+    /// Make a POST request via Scrappey, using the provided parameters and timeout.
     pub async fn post(&self, req: ScrappeyPostRequest, timeout: u64) -> Result<ScrappeyResponse> {
         let mut payload = serde_json::to_value(&req)?.as_object().unwrap().clone();
         payload.insert("cmd".to_string(), Value::String("request.post".to_string()));
@@ -73,6 +78,7 @@ impl ScrappeyClient {
 }
 
 /// Balance response from Scrappey API
+/// Balance response from Scrappey API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyBalance {
     /// Number of requests remaining in your balance
@@ -80,6 +86,8 @@ pub struct ScrappeyBalance {
 }
 
 /// Parameters for Scrappey GET requests
+/// Parameters for Scrappey GET requests.
+/// Most fields are optional and allow fine-tuning of the request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScrappeyGetRequest {
     pub url: String,
@@ -106,6 +114,8 @@ pub struct ScrappeyGetRequest {
 }
 
 /// Parameters for Scrappey POST requests
+/// Parameters for Scrappey POST requests.
+/// Accepts post_data as either string or object, plus all GET options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyPostRequest {
     pub url: String,
@@ -134,6 +144,8 @@ pub struct ScrappeyPostRequest {
 }
 
 /// Cookie object for cookiejar and response cookies
+/// Cookie object for Scrappey requests and responses.
+/// Used for cookiejar and response cookies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyCookie {
     pub name: String,
@@ -150,6 +162,7 @@ pub struct ScrappeyCookie {
     pub same_site: Option<String>,
 }
 
+/// Convert a ScrappeyCookie to a thirtyfour::Cookie for browser automation.
 impl From<ScrappeyCookie> for Cookie {
     fn from(scr: ScrappeyCookie) -> Self {
         Cookie {
@@ -170,6 +183,7 @@ impl From<ScrappeyCookie> for Cookie {
 }
 
 /// Scrappey API response
+/// Scrappey API response for challenge-solving requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyResponse {
     pub solution: ScrappeySolution,
@@ -179,6 +193,8 @@ pub struct ScrappeyResponse {
     pub session: Option<String>,
 }
 
+/// Solution object returned by Scrappey for a challenge-solving request.
+/// Contains cookies, user agent, response body, and other metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeySolution {
     pub verified: Option<bool>,

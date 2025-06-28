@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+//! HTTP-to-HTTP proxy bridge for forwarding requests to an upstream proxy,
+//! with optional authentication support. Used to bridge no-auth local proxy
+//! to authenticated upstream proxies for browser automation.
+
 use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -7,7 +11,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Configuration for the HTTP to HTTP proxy bridge
+/// Configuration for the HTTP-to-HTTP proxy bridge.
+/// Allows specifying upstream proxy address, port, and optional authentication.
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
     /// Downstream HTTP proxy server address
@@ -21,7 +26,7 @@ pub struct ProxyConfig {
 }
 
 impl ProxyConfig {
-    /// Create a new proxy configuration without authentication
+    /// Create a new proxy configuration without authentication.
     pub fn new(http_proxy_addr: String, http_proxy_port: u16) -> Self {
         Self {
             http_proxy_addr,
@@ -31,7 +36,7 @@ impl ProxyConfig {
         }
     }
 
-    /// Create a new proxy configuration with username/password authentication
+    /// Create a new proxy configuration with username/password authentication.
     pub fn with_auth(
         http_proxy_addr: String,
         http_proxy_port: u16,
@@ -47,14 +52,15 @@ impl ProxyConfig {
     }
 }
 
-/// HTTP to HTTP proxy bridge server
+/// HTTP-to-HTTP proxy bridge server.
+/// Listens for local connections and forwards them to the configured upstream proxy.
 pub struct HttpProxyBridge {
     config: Arc<ProxyConfig>,
     listener: Option<TcpListener>,
 }
 
 impl HttpProxyBridge {
-    /// Create a new proxy bridge with the given configuration
+    /// Create a new proxy bridge with the given configuration.
     pub fn new(config: ProxyConfig) -> Self {
         Self {
             config: Arc::new(config),
@@ -62,7 +68,7 @@ impl HttpProxyBridge {
         }
     }
 
-    /// Bind the proxy server to the specified address
+    /// Bind the proxy server to the specified local address.
     pub async fn bind(&mut self, addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         log::info!("HTTP proxy bridge bound to {addr}");
@@ -75,7 +81,7 @@ impl HttpProxyBridge {
         Ok(())
     }
 
-    /// Start the proxy server (this will run indefinitely)
+    /// Start the proxy server (runs indefinitely, handling incoming connections).
     pub async fn serve(&self) -> Result<()> {
         let listener = self
             .listener
@@ -99,7 +105,7 @@ impl HttpProxyBridge {
         }
     }
 
-    /// Get the local address the server is bound to
+    /// Get the local address the server is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.listener
             .as_ref()
@@ -109,14 +115,16 @@ impl HttpProxyBridge {
     }
 }
 
-/// Convenience function to create and run a proxy bridge server
+/// Convenience function to create and run a proxy bridge server.
+/// Binds and serves on the given address.
 pub async fn run_http_proxy_bridge(bind_addr: SocketAddr, config: ProxyConfig) -> Result<()> {
     let mut bridge = HttpProxyBridge::new(config);
     bridge.bind(bind_addr).await?;
     bridge.serve().await
 }
 
-/// Handle a single client connection
+/// Handle a single client connection.
+/// Determines if the request is a CONNECT tunnel or a regular HTTP request.
 async fn handle_client(
     client_stream: TcpStream,
     client_addr: SocketAddr,
@@ -151,6 +159,8 @@ async fn handle_client(
     }
 }
 
+/// Handle an HTTP CONNECT request (for HTTPS tunneling).
+/// Establishes a tunnel through the upstream proxy and forwards data bidirectionally.
 async fn handle_connect_method(
     client_reader: BufReader<TcpStream>,
     target: &str,
@@ -229,6 +239,9 @@ async fn handle_connect_method(
     forward_streams(client_stream, proxy_stream).await
 }
 
+/// Handle a regular HTTP request (not CONNECT).
+/// Forwards the request and headers to the upstream proxy, adds authentication if needed,
+/// and then forwards data bidirectionally.
 async fn handle_regular_method(
     mut client_reader: BufReader<TcpStream>,
     request_line: &str,
@@ -272,7 +285,8 @@ async fn handle_regular_method(
     forward_streams(client_stream, proxy_stream).await
 }
 
-/// Forward data bidirectionally between two streams
+/// Forward data bidirectionally between two streams (client <-> proxy).
+/// Used for both CONNECT tunnels and regular HTTP requests.
 async fn forward_streams(client_stream: TcpStream, proxy_stream: TcpStream) -> Result<()> {
     let (mut client_read, mut client_write) = tokio::io::split(client_stream);
     let (mut proxy_read, mut proxy_write) = tokio::io::split(proxy_stream);
@@ -295,7 +309,8 @@ async fn forward_streams(client_stream: TcpStream, proxy_stream: TcpStream) -> R
     Ok(())
 }
 
-/// Establish a raw TCP connection to the downstream proxy
+/// Establish a raw TCP connection to the downstream proxy.
+/// Resolves the address and connects asynchronously.
 async fn connect_to_downstream_proxy(config: &ProxyConfig) -> Result<TcpStream> {
     let addr = format!("{}:{}", config.http_proxy_addr, config.http_proxy_port);
     let mut proxy_addrs = addr.to_socket_addrs()?;

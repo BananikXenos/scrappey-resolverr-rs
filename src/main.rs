@@ -2,6 +2,7 @@ use anyhow::Result;
 use log::error;
 use transparent::TransparentChild;
 
+// Module imports for browser automation, challenge handling, API server, proxy bridge, and Scrappey integration.
 mod browser;
 mod challenge;
 mod flaresolverr;
@@ -9,23 +10,31 @@ mod fwd_proxy;
 mod scrappey;
 use flaresolverr::{FlareSolverrAPI, FlareSolverrConfig};
 
+/// Entrypoint for the FlareSolverr-compatible server.
+/// Initializes logging, loads config, starts proxy bridge, launches chromedriver, and runs the API server.
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize env_logger for logging support
     env_logger::init();
 
+    // Load configuration from environment variables
     let config = load_config()?;
 
+    // Start the local proxy bridge in the background
     start_proxy_bridge(&config).await?;
 
+    // Start the chromedriver process (for browser automation)
     let mut chromedriver = start_chromedriver()?;
 
+    // Run the Axum API server and handle graceful shutdown
     run_server(config, &mut chromedriver).await?;
 
     Ok(())
 }
 
 /// Load configuration from environment variables
+/// Load configuration from environment variables.
+/// Returns a FlareSolverrConfig struct or an error if required variables are missing.
 fn load_config() -> Result<FlareSolverrConfig> {
     let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")?;
     let proxy_host = std::env::var("PROXY_HOST")?;
@@ -48,9 +57,12 @@ fn load_config() -> Result<FlareSolverrConfig> {
 }
 
 /// Start the proxy bridge in a background task
+/// Start the HTTP-to-HTTP proxy bridge in a background task.
+/// This bridge allows the browser to use a local proxy that forwards to an upstream proxy (with optional auth).
 async fn start_proxy_bridge(config: &FlareSolverrConfig) -> Result<()> {
     use crate::fwd_proxy::{HttpProxyBridge, ProxyConfig};
 
+    // Build proxy config with or without authentication
     let proxy_config = if config.proxy_username.is_some() && config.proxy_password.is_some() {
         ProxyConfig::with_auth(
             config.proxy_host.clone(),
@@ -62,6 +74,7 @@ async fn start_proxy_bridge(config: &FlareSolverrConfig) -> Result<()> {
         ProxyConfig::new(config.proxy_host.clone(), config.proxy_port)
     };
 
+    // Bind and spawn the proxy bridge server
     let mut bridge = HttpProxyBridge::new(proxy_config);
     bridge.bind("0.0.0.0:8080".parse()?).await?;
     tokio::spawn(async move {
@@ -73,6 +86,8 @@ async fn start_proxy_bridge(config: &FlareSolverrConfig) -> Result<()> {
 }
 
 /// Start the chromedriver process
+/// Start the chromedriver process for browser automation.
+/// Uses transparent process spawning for proper signal handling.
 fn start_chromedriver() -> Result<TransparentChild> {
     use std::process::Command;
     use transparent::{CommandExt, TransparentRunner};
@@ -85,6 +100,8 @@ fn start_chromedriver() -> Result<TransparentChild> {
 }
 
 /// Run the Axum server with graceful shutdown and chromedriver cleanup
+/// Run the Axum API server with graceful shutdown and chromedriver cleanup.
+/// Binds to the configured address, serves requests, and handles SIGINT/SIGTERM for shutdown.
 async fn run_server(
     config: FlareSolverrConfig,
     chromedriver: &mut std::process::Child,
@@ -104,16 +121,18 @@ async fn run_server(
     let addr = format!("{host}:{port}");
     println!("FlareSolverr starting on {addr}");
 
-    // Create FlareSolverr API instance
+    // Create FlareSolverr API instance and router
     let api = FlareSolverrAPI::new(config.clone());
     let app = api.create_router();
 
-    // Create the listener
+    // Create the TCP listener
     let listener = TcpListener::bind(&addr).await?;
 
+    // Setup shutdown flag for graceful shutdown
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let shutdown_flag_clone = shutdown_flag.clone();
 
+    // Define shutdown signal handler (SIGINT/SIGTERM)
     let shutdown_signal = async move {
         // Wait for either SIGINT or SIGTERM
         let ctrl_c = signal::ctrl_c();

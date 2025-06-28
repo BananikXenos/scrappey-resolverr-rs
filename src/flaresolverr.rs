@@ -13,10 +13,16 @@ use thirtyfour::Cookie;
 
 use crate::browser::{Browser, BrowserConfig};
 
+/// This module implements the FlareSolverr-compatible API server.
+/// It provides endpoints for challenge-solving automation, health checks, and session management.
+/// The main entrypoint is FlareSolverrAPI, which wires up the Axum router.
+
 const STATUS_OK: &str = "ok";
 const STATUS_ERROR: &str = "error";
-const FLARESOLVERR_VERSION: &str = "3.3.21";
+const FLARESOLVERR_VERSION: &str = "3.3.21"; // Version string for compatibility
 
+/// FlareSolverr-compatible cookie representation.
+/// Used for API serialization/deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlaresolverrCookie {
     pub name: String,
@@ -31,6 +37,7 @@ pub struct FlaresolverrCookie {
     pub same_site: Option<String>,
 }
 
+/// Conversion from thirtyfour::Cookie to FlaresolverrCookie.
 impl From<Cookie> for FlaresolverrCookie {
     fn from(cookie: Cookie) -> Self {
         FlaresolverrCookie {
@@ -38,7 +45,7 @@ impl From<Cookie> for FlaresolverrCookie {
             value: cookie.value,
             domain: cookie.domain,
             path: cookie.path,
-            // if none = session cookie, set expiry to -1
+            // If expiry is None, treat as session cookie and set to -1
             expires: cookie
                 .expiry
                 .map_or(-1.0, |exp| exp as f64 / 1000.0), // Convert ms to seconds
@@ -53,6 +60,7 @@ impl From<Cookie> for FlaresolverrCookie {
     }
 }
 
+/// Proxy configuration for incoming API requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     pub url: Option<String>,
@@ -60,6 +68,7 @@ pub struct ProxyConfig {
     pub password: Option<String>,
 }
 
+/// The solution/result returned by a challenge-solving request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeResolutionResult {
@@ -72,6 +81,7 @@ pub struct ChallengeResolutionResult {
     pub user_agent: String,
 }
 
+/// Incoming request format for the FlareSolverr v1 API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct V1Request {
@@ -97,6 +107,7 @@ pub struct V1Request {
     pub return_raw_html: Option<bool>,
 }
 
+/// Outgoing response format for the FlareSolverr v1 API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct V1Response {
@@ -112,6 +123,7 @@ pub struct V1Response {
     pub sessions: Option<Vec<String>>,
 }
 
+/// Response for the index endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexResponse {
     pub msg: String,
@@ -120,17 +132,20 @@ pub struct IndexResponse {
     pub user_agent: String,
 }
 
+/// Response for the health check endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
 }
 
+/// Error response format (not currently used in main API).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
     pub status_code: u16,
 }
 
+/// Configuration for the FlareSolverr API server and browser automation.
 #[derive(Debug, Clone)]
 pub struct FlareSolverrConfig {
     pub proxy_host: String,
@@ -141,15 +156,18 @@ pub struct FlareSolverrConfig {
     pub data_path: String,
 }
 
+/// Main API struct for FlareSolverr-compatible server.
 pub struct FlareSolverrAPI {
     config: FlareSolverrConfig,
 }
 
 impl FlareSolverrAPI {
+    /// Create a new API instance with the given config.
     pub fn new(config: FlareSolverrConfig) -> Self {
         Self { config }
     }
 
+    /// Build the Axum router with all endpoints.
     pub fn create_router(&self) -> Router {
         let config = self.config.clone();
 
@@ -164,6 +182,7 @@ impl FlareSolverrAPI {
 }
 
 // Handler for the index page
+/// Handler for the index page ("/").
 async fn index() -> ResponseJson<IndexResponse> {
     info!("Index endpoint called");
     ResponseJson(IndexResponse {
@@ -174,6 +193,7 @@ async fn index() -> ResponseJson<IndexResponse> {
 }
 
 // Handler for health check
+/// Handler for health check ("/health").
 async fn health() -> ResponseJson<HealthResponse> {
     info!("Health endpoint called");
     ResponseJson(HealthResponse {
@@ -182,6 +202,8 @@ async fn health() -> ResponseJson<HealthResponse> {
 }
 
 // Main V1 API handler
+/// Main handler for the v1 API endpoint ("/v1").
+/// Handles all challenge-solving and session commands.
 async fn v1_handler(
     Json(request): Json<V1Request>,
     config: FlareSolverrConfig,
@@ -230,6 +252,7 @@ async fn v1_handler(
     }
 }
 
+/// Dispatches the v1 API command to the appropriate handler.
 async fn handle_v1_request(
     req: V1Request,
     config: FlareSolverrConfig,
@@ -239,7 +262,7 @@ async fn handle_v1_request(
         return Err("Request parameter 'cmd' is mandatory.".to_string());
     }
 
-    // Handle deprecated parameters
+    // Warn about deprecated parameters for compatibility
     if req.headers.is_some() {
         warn!("Warning: Request parameter 'headers' was removed in FlareSolverr v2.");
     }
@@ -247,8 +270,8 @@ async fn handle_v1_request(
         warn!("Warning: Request parameter 'userAgent' was removed in FlareSolverr v2.");
     }
 
-    // Set default timeout
-    let max_timeout = req.max_timeout.unwrap_or(60000) / 1000; // Convert ms to seconds
+    // Set default timeout (ms to seconds)
+    let max_timeout = req.max_timeout.unwrap_or(60000) / 1000;
 
     match req.cmd.as_str() {
         "request.get" => handle_request_get(req, max_timeout, config).await,
@@ -263,6 +286,7 @@ async fn handle_v1_request(
     }
 }
 
+/// Handles GET challenge-solving requests.
 async fn handle_request_get(
     req: V1Request,
     max_timeout: u32,
@@ -295,12 +319,12 @@ async fn handle_request_get(
         ..Default::default()
     });
 
-    // Try to load browser data if available
+    // Try to load browser data if available (for session persistence)
     if let Err(e) = browser.load_data(&config.data_path) {
         warn!("Failed to load browser data, starting fresh: {e}");
     }
 
-    // Navigate to the URL
+    // Navigate to the URL and solve challenges
     match browser.get(&url, u64::from(max_timeout)).await {
         Ok(response) => {
             // Save browser data after navigation
@@ -348,6 +372,7 @@ async fn handle_request_get(
     }
 }
 
+/// Handles POST challenge-solving requests (not implemented).
 async fn handle_request_post(
     req: V1Request,
     _max_timeout: u32,
@@ -369,21 +394,22 @@ async fn handle_request_post(
     Err("POST requests are not yet implemented.".to_string())
 }
 
+/// Handler for session creation (not implemented).
 async fn handle_sessions_create(_req: V1Request) -> Result<V1Response, String> {
-    // Sessions are not implemented in this version
     Err("Sessions are not implemented in this version.".to_string())
 }
 
+/// Handler for session listing (not implemented).
 async fn handle_sessions_list(_req: V1Request) -> Result<V1Response, String> {
-    // Sessions are not implemented in this version
     Err("Sessions are not implemented in this version.".to_string())
 }
 
+/// Handler for session destruction (not implemented).
 async fn handle_sessions_destroy(_req: V1Request) -> Result<V1Response, String> {
-    // Sessions are not implemented in this version
     Err("Sessions are not implemented in this version.".to_string())
 }
 
+/// Returns a placeholder user agent string for the index endpoint.
 fn get_user_agent() -> String {
     "That's a secret :)".to_string()
 }
