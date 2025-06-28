@@ -58,6 +58,39 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
 
 ### Quick Start 🚦
 
+#### Option 1: Use Prebuilt Docker Image (Recommended)
+
+You can use the prebuilt image from GitHub Container Registry without building locally:
+
+1. **Configure environment variables:**
+   Edit `docker-compose.yml` and set:
+   - `SCRAPPEY_API_KEY` (get from [Scrappey](https://scrappey.com/))
+   - `PROXY_HOST`, `PROXY_PORT`, `PROXY_USERNAME`, `PROXY_PASSWORD` (your HTTP proxy credentials)
+
+2. **Update your `docker-compose.yml`:**
+   In the `scrappey-resolverr` service section, set the image to:
+   ```yaml
+   image: ghcr.io/bananikxenos/scrappey-resolverr-rs:release
+   ```
+   Remove or comment out any `build:` lines for this service.
+
+3. **Start the services:**
+   ```sh
+   docker-compose up -d
+   ```
+
+   This will:
+   - Start an authenticated Squid proxy (`proxy` service)
+   - Pull and run the prebuilt `scrappey-resolverr-rs` image (`scrappey-resolverr` service)
+   - Launch Chrome and chromedriver inside the container
+
+4. **API will be available at:**
+   `http://localhost:8191` 🎯
+
+---
+
+#### Option 2: Build Locally
+
 1. **Clone the repository:**
    ```sh
    git clone <this-repo-url>
