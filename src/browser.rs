@@ -47,7 +47,7 @@ impl Browser {
 
     pub fn save_data(&self, path: &str) -> Result<()> {
         let file = std::fs::File::create(path)?;
-        serde_json::to_writer(file, &self.data)?;
+        serde_json::to_writer_pretty(file, &self.data)?;
         Ok(())
     }
 
@@ -87,12 +87,12 @@ impl Browser {
 
         if ddos_guard::is_protected(&mut driver).await {
             println!("DDoS Guard challenge detected, handling...");
-            ddos_guard::handle_challenge(&mut driver, 60).await?;
+            ddos_guard::handle_challenge(&mut driver, 30).await?;
         }
 
         if challenge::cloudflare::is_protected(&mut driver).await {
             println!("Cloudflare challenge detected, handling...");
-            match challenge::cloudflare::handle_challenge(&mut driver, 60).await {
+            match challenge::cloudflare::handle_challenge(&mut driver, 30).await {
                 Ok(_) => println!("Cloudflare challenge handled successfully."),
                 Err(e) => {
                     println!("Failed to handle Cloudflare challenge: {}", e);
@@ -105,6 +105,7 @@ impl Browser {
                         &proxy,
                     );
 
+                    println!("Attempting to resolve challenge with Scrappey...");
                     match response.await {
                         Ok(scrappey_response) => {
                             println!("Scrappey resolved the challenge successfully.");
@@ -136,11 +137,18 @@ impl Browser {
             }
         }
 
-        // save cookies after challenge is handled
-        let cookies = driver.get_all_cookies().await?;
-        for cookie in cookies {
-            driver.add_cookie(cookie).await?;
-        }
+        // Use Network.getAllCookies (deprecated in favor of Storage.getCookies)
+        let cookies = dev_tools
+            .execute_cdp("Storage.getCookies")
+            .await?
+            .get("cookies")
+            .and_then(|c| c.as_array())
+            .map_or(Vec::new(), |arr| {
+                arr.iter()
+                    .filter_map(|c| serde_json::from_value(c.clone()).ok())
+                    .collect::<Vec<Cookie>>()
+            });
+        self.data.cookies.extend(cookies.clone());
 
         let status = 200; // not provided by thirtyfour, so we assume success
         let cookies = driver.get_all_cookies().await?;
