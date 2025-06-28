@@ -23,5 +23,7 @@ services:
       - PROXY_PORT=8081 # Replace with your proxy port
       - PROXY_USERNAME=username
       - PROXY_PASSWORD=password
+    volumes:
+      - ./data:/data # For cookies and other data
     ports:
       - "8191:8191"

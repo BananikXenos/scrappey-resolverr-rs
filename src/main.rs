@@ -1,7 +1,5 @@
 use anyhow::Result;
-use std::process::Command;
-use tokio::net::TcpListener;
-use transparent::{CommandExt, TransparentRunner};
+use transparent::TransparentChild;
 
 mod browser;
 mod challenge;
@@ -10,11 +8,21 @@ mod fwd_proxy;
 mod scrappey;
 use flaresolverr::{FlareSolverrAPI, FlareSolverrConfig};
 
-use crate::fwd_proxy::{HttpProxyBridge, ProxyConfig};
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Extract environment variables
+    let config = load_config()?;
+
+    start_proxy_bridge(&config).await?;
+
+    let mut chromedriver = start_chromedriver()?;
+
+    run_server(config, &mut chromedriver).await?;
+
+    Ok(())
+}
+
+/// Load configuration from environment variables
+fn load_config() -> Result<FlareSolverrConfig> {
     let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")?;
     let proxy_host = std::env::var("PROXY_HOST")?;
     let proxy_port = std::env::var("PROXY_PORT")?
@@ -25,16 +33,29 @@ async fn main() -> Result<()> {
     let data_path =
         std::env::var("DATA_PATH").unwrap_or_else(|_| "/data/persistent.json".to_string());
 
-    // Run local http to socks5 proxy server
-    let proxy_config = if proxy_username.is_some() && proxy_password.is_some() {
+    Ok(FlareSolverrConfig {
+        proxy_host,
+        proxy_port,
+        proxy_username,
+        proxy_password,
+        scrappey_api_key,
+        data_path,
+    })
+}
+
+/// Start the proxy bridge in a background task
+async fn start_proxy_bridge(config: &FlareSolverrConfig) -> Result<()> {
+    use crate::fwd_proxy::{HttpProxyBridge, ProxyConfig};
+
+    let proxy_config = if config.proxy_username.is_some() && config.proxy_password.is_some() {
         ProxyConfig::with_auth(
-            proxy_host.clone(),
-            proxy_port,
-            proxy_username.as_ref().unwrap().clone(),
-            proxy_password.as_ref().unwrap().clone(),
+            config.proxy_host.clone(),
+            config.proxy_port,
+            config.proxy_username.as_ref().unwrap().clone(),
+            config.proxy_password.as_ref().unwrap().clone(),
         )
     } else {
-        ProxyConfig::new(proxy_host.clone(), proxy_port)
+        ProxyConfig::new(config.proxy_host.clone(), config.proxy_port)
     };
 
     let mut bridge = HttpProxyBridge::new(proxy_config);
@@ -44,11 +65,30 @@ async fn main() -> Result<()> {
             eprintln!("Error running proxy bridge: {e}");
         }
     });
+    Ok(())
+}
 
-    let mut chromedriver = Command::new("/usr/bin/chromedriver")
+/// Start the chromedriver process
+fn start_chromedriver() -> Result<TransparentChild> {
+    use std::process::Command;
+    use transparent::{CommandExt, TransparentRunner};
+
+    let chromedriver = Command::new("/usr/bin/chromedriver")
         .arg("--port=9515")
         .spawn_transparent(&TransparentRunner::new())
         .expect("Failed to start chromedriver");
+    Ok(chromedriver)
+}
+
+/// Run the Axum server with graceful shutdown and chromedriver cleanup
+async fn run_server(
+    config: FlareSolverrConfig,
+    chromedriver: &mut std::process::Child,
+) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::net::TcpListener;
+    use tokio::signal;
 
     // Get host and port from environment or use defaults
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -61,24 +101,44 @@ async fn main() -> Result<()> {
     println!("FlareSolverr starting on {addr}");
 
     // Create FlareSolverr API instance
-    let api = FlareSolverrAPI::new(FlareSolverrConfig {
-        proxy_host,
-        proxy_port,
-        proxy_username,
-        proxy_password,
-        scrappey_api_key,
-        data_path,
-    });
+    let api = FlareSolverrAPI::new(config.clone());
     let app = api.create_router();
 
     // Create the listener
     let listener = TcpListener::bind(&addr).await?;
 
-    // Start the server
-    axum::serve(listener, app).await?;
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_flag_clone = shutdown_flag.clone();
+
+    let shutdown_signal = async move {
+        // Wait for either SIGINT or SIGTERM
+        let ctrl_c = signal::ctrl_c();
+        #[cfg(unix)]
+        let terminate = {
+            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+            async move { sigterm.recv().await }
+        };
+        #[cfg(not(unix))]
+        let terminate = async { std::future::pending::<()>().await };
+
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+        shutdown_flag_clone.store(true, Ordering::SeqCst);
+        println!("Shutdown signal received, shutting down...");
+    };
+
+    // Start the server with graceful shutdown
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal);
+
+    // Wait for the server to finish
+    server.await?;
 
     // Stop chromedriver when the server stops
-    chromedriver.kill().expect("Failed to kill chromedriver");
+    if let Err(e) = chromedriver.kill() {
+        eprintln!("Failed to kill chromedriver: {e}");
+    }
 
     Ok(())
 }
