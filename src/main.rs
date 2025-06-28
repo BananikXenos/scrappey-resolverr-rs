@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::{debug, error, info, warn};
 use transparent::TransparentChild;
 
 mod browser;
@@ -10,6 +11,9 @@ use flaresolverr::{FlareSolverrAPI, FlareSolverrConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize env_logger for logging support
+    env_logger::init();
+
     let config = load_config()?;
 
     start_proxy_bridge(&config).await?;
@@ -62,7 +66,7 @@ async fn start_proxy_bridge(config: &FlareSolverrConfig) -> Result<()> {
     bridge.bind("0.0.0.0:8080".parse()?).await?;
     tokio::spawn(async move {
         if let Err(e) = bridge.serve().await {
-            eprintln!("Error running proxy bridge: {e}");
+            error!("Error running proxy bridge: {e}");
         }
     });
     Ok(())
@@ -137,7 +141,7 @@ async fn run_server(
 
     // Stop chromedriver when the server stops
     if let Err(e) = chromedriver.kill() {
-        eprintln!("Failed to kill chromedriver: {e}");
+        error!("Failed to kill chromedriver: {e}");
     }
 
     Ok(())

@@ -49,5 +49,8 @@ EXPOSE 8191
 RUN mkdir -p /data
 VOLUME ["/data"]
 
+# Set environment variables for logging
+ENV RUST_LOG=info,tracing::span=warn
+
 # Set default command
 CMD ["/usr/local/bin/scrappey-resolverr-rs"]

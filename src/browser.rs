@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use thirtyfour::{Proxy, extensions::cdp::ChromeDevTools, prelude::*};
 
@@ -170,7 +171,7 @@ impl Browser {
             if let Some(expiry) = cookie.expiry
                 && expiry <= now
             {
-                println!("Removing expired cookie: {cookie:?}");
+                debug!("Removing expired cookie: {cookie:?}");
                 return false;
             }
             true
@@ -185,13 +186,13 @@ impl Browser {
     ) -> Result<Option<Response>> {
         // Handle DDoS Guard challenge
         if ddos_guard::is_protected(driver).await {
-            println!("DDoS Guard challenge detected, handling...");
+            info!("DDoS Guard challenge detected, handling...");
             ddos_guard::handle_challenge(driver, timeout).await?;
         }
 
         // Handle Cloudflare challenge
         if challenge::cloudflare::is_protected(driver).await {
-            println!("Cloudflare challenge detected, handling...");
+            info!("Cloudflare challenge detected, handling...");
             if let Some(response) = self
                 .handle_cloudflare_challenge(driver, url, timeout)
                 .await?
@@ -211,11 +212,11 @@ impl Browser {
     ) -> Result<Option<Response>> {
         match challenge::cloudflare::handle_challenge(driver, timeout / 3).await {
             Ok(_) => {
-                println!("Cloudflare challenge handled successfully.");
+                info!("Cloudflare challenge handled successfully.");
                 Ok(None)
             }
             Err(e) => {
-                println!("Failed to handle Cloudflare challenge: {e}");
+                warn!("Failed to handle Cloudflare challenge: {e}");
                 // we can close the driver here, but we will try to resolve with Scrappey
                 driver.clone().quit().await?;
                 self.fallback_to_scrappey(url, (timeout / 3) * 2).await
@@ -243,7 +244,7 @@ impl Browser {
             )
         };
 
-        println!("Attempting to resolve challenge with Scrappey...");
+        info!("Attempting to resolve challenge with Scrappey...");
 
         let response = challenge::cloudflare::scrappey_resolve(
             url.to_string(),
@@ -253,10 +254,10 @@ impl Browser {
         )
         .await?;
 
-        println!("Scrappey resolved the challenge successfully.");
+        info!("Scrappey resolved the challenge successfully.");
 
         // Print debug information
-        println!("Scrappey response: {response:?}");
+        debug!("Scrappey response: {response:?}");
 
         // Update cookies from Scrappey response
         for cookie in response.solution.cookies.unwrap() {

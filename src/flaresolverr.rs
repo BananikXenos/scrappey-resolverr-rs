@@ -6,6 +6,7 @@ use axum::{
     response::Json as ResponseJson,
     routing::{get, post},
 };
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thirtyfour::Cookie;
@@ -164,6 +165,7 @@ impl FlareSolverrAPI {
 
 // Handler for the index page
 async fn index() -> ResponseJson<IndexResponse> {
+    info!("Index endpoint called");
     ResponseJson(IndexResponse {
         msg: "FlareSolverr is ready!".to_string(),
         version: FLARESOLVERR_VERSION.to_string(),
@@ -173,6 +175,7 @@ async fn index() -> ResponseJson<IndexResponse> {
 
 // Handler for health check
 async fn health() -> ResponseJson<HealthResponse> {
+    info!("Health endpoint called");
     ResponseJson(HealthResponse {
         status: STATUS_OK.to_string(),
     })
@@ -188,7 +191,7 @@ async fn v1_handler(
         .unwrap()
         .as_millis() as u64;
 
-    println!("Incoming request => POST /v1 body: {request:?}");
+    info!("Incoming request => POST /v1 body: {request:?}");
 
     let result = handle_v1_request(request, config).await;
 
@@ -203,7 +206,7 @@ async fn v1_handler(
             response.end_timestamp = end_timestamp;
             response.version = FLARESOLVERR_VERSION.to_string();
 
-            println!(
+            info!(
                 "Response in {} s",
                 (end_timestamp - start_timestamp) as f64 / 1000.0
             );
@@ -221,7 +224,7 @@ async fn v1_handler(
                 sessions: None,
             };
 
-            println!("Error: {error_msg}");
+            error!("Error: {error_msg}");
             Ok(ResponseJson(error_response))
         }
     }
@@ -238,10 +241,10 @@ async fn handle_v1_request(
 
     // Handle deprecated parameters
     if req.headers.is_some() {
-        println!("Warning: Request parameter 'headers' was removed in FlareSolverr v2.");
+        warn!("Warning: Request parameter 'headers' was removed in FlareSolverr v2.");
     }
     if req.user_agent.is_some() {
-        println!("Warning: Request parameter 'userAgent' was removed in FlareSolverr v2.");
+        warn!("Warning: Request parameter 'userAgent' was removed in FlareSolverr v2.");
     }
 
     // Set default timeout
@@ -273,10 +276,10 @@ async fn handle_request_get(
         return Err("Cannot use 'postData' when sending a GET request.".to_string());
     }
     if req.return_raw_html.is_some() {
-        println!("Warning: Request parameter 'returnRawHtml' was removed in FlareSolverr v2.");
+        warn!("Warning: Request parameter 'returnRawHtml' was removed in FlareSolverr v2.");
     }
     if req.download.is_some() {
-        println!("Warning: Request parameter 'download' was removed in FlareSolverr v2.");
+        warn!("Warning: Request parameter 'download' was removed in FlareSolverr v2.");
     }
 
     let url = req.url.unwrap();
@@ -294,7 +297,7 @@ async fn handle_request_get(
 
     // Try to load browser data if available
     if let Err(e) = browser.load_data(&config.data_path) {
-        println!("Failed to load browser data, starting fresh: {e}");
+        warn!("Failed to load browser data, starting fresh: {e}");
     }
 
     // Navigate to the URL
@@ -302,7 +305,7 @@ async fn handle_request_get(
         Ok(response) => {
             // Save browser data after navigation
             if let Err(e) = browser.save_data(&config.data_path) {
-                println!("Failed to save browser data: {e}");
+                warn!("Failed to save browser data: {e}");
             }
 
             // Convert browser response to FlareSolverr format
@@ -337,7 +340,7 @@ async fn handle_request_get(
         Err(e) => {
             // Save browser data even on error
             if let Err(save_err) = browser.save_data(&config.data_path) {
-                println!("Failed to save browser data: {save_err}");
+                warn!("Failed to save browser data: {save_err}");
             }
 
             Err(format!("Error solving the challenge: {e}"))
@@ -357,10 +360,10 @@ async fn handle_request_post(
         );
     }
     if req.return_raw_html.is_some() {
-        println!("Warning: Request parameter 'returnRawHtml' was removed in FlareSolverr v2.");
+        warn!("Warning: Request parameter 'returnRawHtml' was removed in FlareSolverr v2.");
     }
     if req.download.is_some() {
-        println!("Warning: Request parameter 'download' was removed in FlareSolverr v2.");
+        warn!("Warning: Request parameter 'download' was removed in FlareSolverr v2.");
     }
 
     Err("POST requests are not yet implemented.".to_string())

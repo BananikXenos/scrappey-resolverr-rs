@@ -65,10 +65,11 @@ impl HttpProxyBridge {
     /// Bind the proxy server to the specified address
     pub async fn bind(&mut self, addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        println!("HTTP proxy bridge bound to {addr}");
-        println!(
+        log::info!("HTTP proxy bridge bound to {addr}");
+        log::info!(
             "Forwarding to HTTP proxy at {}:{}",
-            self.config.http_proxy_addr, self.config.http_proxy_port
+            self.config.http_proxy_addr,
+            self.config.http_proxy_port
         );
         self.listener = Some(listener);
         Ok(())
@@ -87,12 +88,12 @@ impl HttpProxyBridge {
                     let config = Arc::clone(&self.config);
                     tokio::spawn(async move {
                         if let Err(e) = handle_client(stream, addr, config).await {
-                            println!("Error handling client {addr}: {e}");
+                            log::error!("Error handling client {addr}: {e}");
                         }
                     });
                 }
                 Err(e) => {
-                    println!("Failed to accept connection: {e}");
+                    log::error!("Failed to accept connection: {e}");
                 }
             }
         }
@@ -121,7 +122,7 @@ async fn handle_client(
     client_addr: SocketAddr,
     config: Arc<ProxyConfig>,
 ) -> Result<()> {
-    println!("New client connection from {client_addr}");
+    log::info!("New client connection from {client_addr}");
 
     let mut reader = BufReader::new(client_stream);
     let mut request_line = String::new();
@@ -134,7 +135,7 @@ async fn handle_client(
         return Ok(());
     }
 
-    println!("Request line: {}", request_line.trim());
+    log::debug!("Request line: {}", request_line.trim());
 
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 3 {
@@ -155,7 +156,7 @@ async fn handle_connect_method(
     target: &str,
     config: Arc<ProxyConfig>,
 ) -> Result<()> {
-    println!("Handling CONNECT to {target}");
+    log::info!("Handling CONNECT to {target}");
 
     // Connect to the downstream HTTP proxy
     let mut proxy_stream = connect_to_downstream_proxy(&config).await?;
@@ -190,6 +191,7 @@ async fn handle_connect_method(
         }
         let mut client_stream = client_reader.into_inner();
         client_stream.write_all(full_response.as_bytes()).await?;
+        log::warn!("Downstream proxy denied CONNECT: {}", full_response.trim());
         return Err(anyhow!(
             "Downstream proxy denied CONNECT: {}",
             full_response.trim()
@@ -232,7 +234,7 @@ async fn handle_regular_method(
     request_line: &str,
     config: Arc<ProxyConfig>,
 ) -> Result<()> {
-    println!("Handling regular request: {}", request_line.trim());
+    log::info!("Handling regular request: {}", request_line.trim());
 
     // Connect to the downstream HTTP proxy
     let mut proxy_stream = connect_to_downstream_proxy(&config).await?;
@@ -281,12 +283,12 @@ async fn forward_streams(client_stream: TcpStream, proxy_stream: TcpStream) -> R
     tokio::select! {
         result = client_to_proxy => {
             if let Err(e) = result {
-                println!("Client to proxy forwarding ended: {e}");
+                log::warn!("Client to proxy forwarding ended: {e}");
             }
         }
         result = proxy_to_client => {
             if let Err(e) = result {
-                println!("Proxy to client forwarding ended: {e}");
+                log::warn!("Proxy to client forwarding ended: {e}");
             }
         }
     }
