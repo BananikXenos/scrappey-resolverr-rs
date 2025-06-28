@@ -1,7 +1,7 @@
 use anyhow::Result;
+use std::process::Command;
 use tokio::net::TcpListener;
 use transparent::{CommandExt, TransparentRunner};
-use std::process::Command;
 
 mod browser;
 mod challenge;
@@ -22,6 +22,8 @@ async fn main() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Invalid PROXY_PORT"))?;
     let proxy_username = std::env::var("PROXY_USERNAME").ok();
     let proxy_password = std::env::var("PROXY_PASSWORD").ok();
+    let data_path =
+        std::env::var("DATA_PATH").unwrap_or_else(|_| "/data/persistent.json".to_string());
 
     // Run local http to socks5 proxy server
     let proxy_config = if proxy_username.is_some() && proxy_password.is_some() {
@@ -65,6 +67,7 @@ async fn main() -> Result<()> {
         proxy_username,
         proxy_password,
         scrappey_api_key,
+        data_path,
     });
     let app = api.create_router();
 

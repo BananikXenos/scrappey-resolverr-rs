@@ -137,6 +137,7 @@ pub struct FlareSolverrConfig {
     pub proxy_username: Option<String>,
     pub proxy_password: Option<String>,
     pub scrappey_api_key: String,
+    pub data_path: String,
 }
 
 pub struct FlareSolverrAPI {
@@ -292,15 +293,15 @@ async fn handle_request_get(
     });
 
     // Try to load browser data if available
-    if let Err(e) = browser.load_data("browser_data.json") {
-        println!("Failed to load browser data: {}", e);
+    if let Err(e) = browser.load_data(&config.data_path) {
+        println!("Failed to load browser data, starting fresh: {}", e);
     }
 
     // Navigate to the URL
     match browser.get(&url, u64::from(max_timeout)).await {
         Ok(response) => {
             // Save browser data after navigation
-            if let Err(e) = browser.save_data("browser_data.json") {
+            if let Err(e) = browser.save_data(&config.data_path) {
                 println!("Failed to save browser data: {}", e);
             }
 
@@ -335,7 +336,7 @@ async fn handle_request_get(
         }
         Err(e) => {
             // Save browser data even on error
-            if let Err(save_err) = browser.save_data("browser_data.json") {
+            if let Err(save_err) = browser.save_data(&config.data_path) {
                 println!("Failed to save browser data: {}", save_err);
             }
 

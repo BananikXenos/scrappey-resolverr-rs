@@ -1,0 +1,27 @@
+version: "3"
+services:
+  proxy:
+    image: yegor256/squid-proxy
+    restart: always
+    ports:
+      - "8081:3128"
+    environment:
+      - USERNAME=username
+      - PASSWORD=password
+
+  scrappey-resolverr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - scrappey-resolverr:latest
+    depends_on:
+      - proxy
+    environment:
+      - SCRAPPEY_API_KEY=apikey
+      - PROXY_HOST=proxy-public # Replace with your proxy host
+      - PROXY_PORT=8081 # Replace with your proxy port
+      - PROXY_USERNAME=username
+      - PROXY_PASSWORD=password
+    ports:
+      - "8191:8191"
