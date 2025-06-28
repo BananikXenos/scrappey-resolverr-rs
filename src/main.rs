@@ -23,6 +23,7 @@ async fn main() -> Result<()> {
     let config = load_config()?;
 
     // Print scrappey API balance
+    info!("Checking Scrappey API balance...");
     let scrappey_client = ScrappeyClient::new(config.scrappey_api_key.clone());
     match scrappey_client.get_balance(30).await {
         Ok(balance) => info!("Scrappey API balance: {}", balance.balance),

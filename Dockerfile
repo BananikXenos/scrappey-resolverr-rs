@@ -1,13 +1,37 @@
-# ---- Build Stage ----
-FROM rustlang/rust:nightly AS builder
+# ---- Base Stage: Install build tools and caching helpers ----
+FROM rustlang/rust:nightly AS base
 
+# Install sccache and cargo-chef for build caching
+RUN cargo install sccache --version ^0.7 && \
+    cargo install cargo-chef --version ^0.1
+
+ENV RUSTC_WRAPPER=sccache
+ENV SCCACHE_DIR=/sccache
+
+# ---- Planner Stage: Generate dependency recipe ----
+FROM base AS planner
 WORKDIR /app
 COPY . .
+# Cache Cargo registry and sccache for dependency resolution
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef prepare --recipe-path recipe.json
 
-# Build in release mode
-RUN cargo build --release
+# ---- Builder Stage: Build dependencies and project ----
+FROM base AS builder
+WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
+# Cache Cargo registry and sccache for dependency build
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json
+COPY . .
+# Cache Cargo registry and sccache for final build
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo build --release
 
-# ---- Final Stage ----
+# ---- Final Stage: Minimal runtime image ----
 FROM archlinux:latest
 
 # Install curl and gnupg for key management
