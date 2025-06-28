@@ -1,5 +1,8 @@
 use anyhow::Result;
 use tokio::net::TcpListener;
+use transparent::{CommandExt, TransparentRunner};
+use std::process::Command;
+
 mod browser;
 mod challenge;
 mod flaresolverr;
@@ -9,11 +12,10 @@ use flaresolverr::{FlareSolverrAPI, FlareSolverrConfig};
 
 use crate::fwd_proxy::{HttpProxyBridge, ProxyConfig};
 
-const FLARESOLVERR_VERSION: &str = "3.3.21";
-
-fn extract_environment_variables() -> Result<FlareSolverrConfig> {
-    // Extract environment variables with defaults
-    let api_key = std::env::var("SCRAPPEY_API_KEY")?;
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Extract environment variables
+    let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")?;
     let proxy_host = std::env::var("PROXY_HOST")?;
     let proxy_port = std::env::var("PROXY_PORT")?
         .parse::<u16>()
@@ -21,30 +23,16 @@ fn extract_environment_variables() -> Result<FlareSolverrConfig> {
     let proxy_username = std::env::var("PROXY_USERNAME").ok();
     let proxy_password = std::env::var("PROXY_PASSWORD").ok();
 
-    Ok(FlareSolverrConfig {
-        proxy_host,
-        proxy_port,
-        proxy_username,
-        proxy_password,
-        scrappey_api_key: api_key,
-    })
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Extract environment variables
-    let config = extract_environment_variables()?;
-
     // Run local http to socks5 proxy server
-    let proxy_config = if config.proxy_username.is_some() && config.proxy_password.is_some() {
+    let proxy_config = if proxy_username.is_some() && proxy_password.is_some() {
         ProxyConfig::with_auth(
-            config.proxy_host.clone(),
-            config.proxy_port,
-            config.proxy_username.as_ref().unwrap().clone(),
-            config.proxy_password.as_ref().unwrap().clone(),
+            proxy_host.clone(),
+            proxy_port,
+            proxy_username.as_ref().unwrap().clone(),
+            proxy_password.as_ref().unwrap().clone(),
         )
     } else {
-        ProxyConfig::new(config.proxy_host.clone(), config.proxy_port)
+        ProxyConfig::new(proxy_host.clone(), proxy_port)
     };
 
     let mut bridge = HttpProxyBridge::new(proxy_config);
@@ -55,6 +43,11 @@ async fn main() -> Result<()> {
         }
     });
 
+    let mut chromedriver = Command::new("/usr/bin/chromedriver")
+        .arg("--port=9515")
+        .spawn_transparent(&TransparentRunner::new())
+        .expect("Failed to start chromedriver");
+
     // Get host and port from environment or use defaults
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
@@ -63,10 +56,16 @@ async fn main() -> Result<()> {
         .unwrap_or(8191);
 
     let addr = format!("{}:{}", host, port);
-    println!("FlareSolverr {} starting on {}", FLARESOLVERR_VERSION, addr);
+    println!("FlareSolverr starting on {}", addr);
 
     // Create FlareSolverr API instance
-    let api = FlareSolverrAPI::new(config);
+    let api = FlareSolverrAPI::new(FlareSolverrConfig {
+        proxy_host,
+        proxy_port,
+        proxy_username,
+        proxy_password,
+        scrappey_api_key,
+    });
     let app = api.create_router();
 
     // Create the listener
@@ -74,6 +73,9 @@ async fn main() -> Result<()> {
 
     // Start the server
     axum::serve(listener, app).await?;
+
+    // Stop chromedriver when the server stops
+    chromedriver.kill().expect("Failed to kill chromedriver");
 
     Ok(())
 }
