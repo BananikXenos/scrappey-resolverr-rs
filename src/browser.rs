@@ -210,7 +210,7 @@ impl Browser {
         url: &str,
         timeout: u64,
     ) -> Result<Option<Response>> {
-        match challenge::cloudflare::handle_challenge(driver, timeout / 3).await {
+        match challenge::cloudflare::handle_challenge(driver, timeout).await {
             Ok(_) => {
                 info!("Cloudflare challenge handled successfully.");
                 Ok(None)
@@ -219,7 +219,7 @@ impl Browser {
                 warn!("Failed to handle Cloudflare challenge: {e}");
                 // we can close the driver here, but we will try to resolve with Scrappey
                 driver.clone().quit().await?;
-                self.fallback_to_scrappey(url, (timeout / 3) * 2).await
+                self.fallback_to_scrappey(url, timeout).await
             }
         }
     }
