@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::error;
+use log::{error, info};
 use transparent::TransparentChild;
 
 // Module imports for browser automation, challenge handling, API server, proxy bridge, and Scrappey integration.
@@ -10,6 +10,8 @@ mod fwd_proxy;
 mod scrappey;
 use flaresolverr::{FlareSolverrAPI, FlareSolverrConfig};
 
+use crate::scrappey::ScrappeyClient;
+
 /// Entrypoint for the FlareSolverr-compatible server.
 /// Initializes logging, loads config, starts proxy bridge, launches chromedriver, and runs the API server.
 #[tokio::main]
@@ -19,6 +21,13 @@ async fn main() -> Result<()> {
 
     // Load configuration from environment variables
     let config = load_config()?;
+
+    // Print scrappey API balance
+    let scrappey_client = ScrappeyClient::new(config.scrappey_api_key.clone());
+    match scrappey_client.get_balance(30).await {
+        Ok(balance) => info!("Scrappey API balance: {}", balance.balance),
+        Err(e) => error!("Failed to get Scrappey API balance: {e}"),
+    }
 
     // Start the local proxy bridge in the background
     start_proxy_bridge(&config).await?;
@@ -119,7 +128,7 @@ async fn run_server(
         .unwrap_or(8191);
 
     let addr = format!("{host}:{port}");
-    println!("FlareSolverr starting on {addr}");
+    info!("FlareSolverr starting on {addr}");
 
     // Create FlareSolverr API instance and router
     let api = FlareSolverrAPI::new(config.clone());
@@ -149,7 +158,7 @@ async fn run_server(
             _ = terminate => {},
         }
         shutdown_flag_clone.store(true, Ordering::SeqCst);
-        println!("Shutdown signal received, shutting down...");
+        info!("Shutdown signal received, shutting down...");
     };
 
     // Start the server with graceful shutdown
