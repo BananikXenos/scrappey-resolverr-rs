@@ -47,14 +47,14 @@ pub mod cloudflare {
     }
 
     pub async fn scrappey_resolve(
-        driver: &mut WebDriver,
+        url: String,
         api_key: String,
         proxy: &str,
     ) -> Result<ScrappeyResponse> {
         // If we reach here, the challenge was not solved in time, we need to use a third-party service
         let client = ScrappeyClient::new(api_key);
         let request = ScrappeyGetRequest {
-            url: driver.current_url().await?.to_string(),
+            url,
             proxy: Some(proxy.to_string()),
             ..Default::default()
         };

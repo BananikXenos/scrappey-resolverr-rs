@@ -1,12 +1,18 @@
 use anyhow::Result;
 
+use crate::browser::{Browser, BrowserConfig};
+
 mod browser;
 mod challenge;
 mod scrappey;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut browser = browser::Browser::new();
+    let mut browser = Browser::new().with_config(BrowserConfig {
+        challenge_timeout: 45,
+        window_size: (1280, 720),
+        ..Default::default()
+    });
 
     match browser.load_data("browser_data.json") {
         Ok(_) => println!("Browser data loaded successfully."),

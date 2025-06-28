@@ -4,6 +4,24 @@ use thirtyfour::{extensions::cdp::ChromeDevTools, prelude::*};
 
 use crate::challenge::{self, ddos_guard};
 
+// Configuration extracted to eliminate hard-coded values
+#[derive(Debug, Clone)]
+pub struct BrowserConfig {
+    pub webdriver_url: String,
+    pub window_size: (u32, u32),
+    pub challenge_timeout: u64,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            webdriver_url: "http://localhost:9515".to_string(),
+            window_size: (1920, 1080),
+            challenge_timeout: 30,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BrowserData {
     pub user_agent: String,
@@ -29,13 +47,20 @@ pub struct Response {
 
 pub struct Browser {
     pub data: BrowserData,
+    pub config: BrowserConfig,
 }
 
 impl Browser {
     pub fn new() -> Self {
         Browser {
             data: BrowserData::default(),
+            config: BrowserConfig::default(),
         }
+    }
+
+    pub fn with_config(mut self, config: BrowserConfig) -> Self {
+        self.config = config;
+        self
     }
 
     pub fn load_data(&mut self, path: &str) -> Result<()> {
@@ -51,94 +76,154 @@ impl Browser {
         Ok(())
     }
 
+    // Main navigation method - now much cleaner and focused
     pub async fn navigate(&mut self, url: &str) -> Result<Response> {
+        let mut driver = self.setup_driver().await?;
+
+        self.configure_cookies(&driver).await?;
+
+        driver.get(url).await?;
+
+        self.handle_challenges(&mut driver, url).await?;
+
+        let response = self.extract_response(&driver, url).await?;
+
+        driver.quit().await?;
+
+        Ok(response)
+    }
+
+    // Broken out methods for specific responsibilities
+    async fn setup_driver(&self) -> Result<WebDriver> {
         let mut caps = DesiredCapabilities::chrome();
         caps.set_no_sandbox()?;
         caps.set_disable_dev_shm_usage()?;
         caps.add_arg("--disable-blink-features=AutomationControlled")?;
-        caps.add_arg("window-size=1920,1080")?;
-        caps.add_arg(format!("user-agent={}", self.data.user_agent).as_str())?;
-        caps.add_arg("disable-infobars")?;
+        caps.add_arg(&format!(
+            "--window-size={},{}",
+            self.config.window_size.0, self.config.window_size.1
+        ))?;
+        caps.add_arg(&format!("--user-agent={}", self.data.user_agent))?;
+        caps.add_arg("--disable-infobars")?;
         caps.insert_browser_option("excludeSwitches", ["enable-automation"])?;
 
-        let mut driver = WebDriver::new("http://localhost:9515", caps).await?;
+        let driver = WebDriver::new(&self.config.webdriver_url, caps).await?;
+        Ok(driver)
+    }
 
-        // Handle expired cookies
+    async fn configure_cookies(&mut self, driver: &WebDriver) -> Result<()> {
+        // Clean expired cookies first
+        self.clean_expired_cookies();
+
+        // Set cookies using Chrome DevTools
+        let dev_tools = ChromeDevTools::new(driver.handle.clone());
+        dev_tools.execute_cdp("Network.enable").await?;
+
+        for cookie in &self.data.cookies {
+            let cookie_value = serde_json::to_value(cookie)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize cookie: {}", e))?;
+            dev_tools
+                .execute_cdp_with_params("Network.setCookie", cookie_value)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    fn clean_expired_cookies(&mut self) {
+        let now = chrono::Utc::now().timestamp();
         self.data.cookies.retain(|cookie| {
             if let Some(expiry) = cookie.expiry {
-                if expiry <= chrono::Utc::now().timestamp() {
+                if expiry <= now {
                     println!("Removing expired cookie: {:?}", cookie);
                     return false;
                 }
             }
             true
         });
+    }
 
-        // A weird workaround to set cookies before requesting the URL
-        let dev_tools = ChromeDevTools::new(driver.handle.clone());
-        dev_tools.execute_cdp("Network.enable").await?;
-        for cookie in &self.data.cookies {
-            dev_tools
-                .execute_cdp_with_params("Network.setCookie", serde_json::to_value(cookie).unwrap())
-                .await?;
-        }
-
-        driver.get(url).await?;
-
-        if ddos_guard::is_protected(&mut driver).await {
+    async fn handle_challenges(
+        &mut self,
+        driver: &mut WebDriver,
+        url: &str,
+    ) -> Result<Option<Response>> {
+        // Handle DDoS Guard challenge
+        if ddos_guard::is_protected(driver).await {
             println!("DDoS Guard challenge detected, handling...");
-            ddos_guard::handle_challenge(&mut driver, 30).await?;
+            ddos_guard::handle_challenge(driver, self.config.challenge_timeout).await?;
         }
 
-        if challenge::cloudflare::is_protected(&mut driver).await {
+        // Handle Cloudflare challenge
+        if challenge::cloudflare::is_protected(driver).await {
             println!("Cloudflare challenge detected, handling...");
-            match challenge::cloudflare::handle_challenge(&mut driver, 30).await {
-                Ok(_) => println!("Cloudflare challenge handled successfully."),
-                Err(e) => {
-                    println!("Failed to handle Cloudflare challenge: {}", e);
-                    let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")
-                        .expect("SCRAPPEY_API_KEY environment variable not set");
-                    let proxy = std::env::var("SCRAPPEY_PROXY").unwrap_or_default();
-                    let response = challenge::cloudflare::scrappey_resolve(
-                        &mut driver,
-                        scrappey_api_key,
-                        &proxy,
-                    );
-
-                    println!("Attempting to resolve challenge with Scrappey...");
-                    match response.await {
-                        Ok(scrappey_response) => {
-                            println!("Scrappey resolved the challenge successfully.");
-                            // Update cookies from Scrappey response
-                            for cookie in scrappey_response.solution.cookies.unwrap() {
-                                self.data.cookies.push(cookie.into());
-                            }
-                            // Update user agent from Scrappey response
-                            self.data.user_agent =
-                                scrappey_response.solution.user_agent.unwrap_or_default();
-
-                            // return the Scrappey response
-                            return Ok(Response {
-                                url: scrappey_response
-                                    .solution
-                                    .current_url
-                                    .unwrap_or(url.to_string()),
-                                status: scrappey_response.solution.status_code.unwrap_or(200),
-                                body: scrappey_response.solution.response.unwrap_or_default(),
-                                cookies: self.data.cookies.clone(),
-                                user_agent: self.data.user_agent.clone(),
-                            });
-                        }
-                        Err(e) => {
-                            println!("Failed to resolve challenge with Scrappey: {}", e);
-                        }
-                    }
-                }
+            if let Some(response) = self.handle_cloudflare_challenge(driver, url).await? {
+                return Ok(Some(response));
             }
         }
 
-        // Use Network.getAllCookies (deprecated in favor of Storage.getCookies)
-        let cookies = dev_tools
+        Ok(None)
+    }
+
+    async fn handle_cloudflare_challenge(
+        &mut self,
+        driver: &mut WebDriver,
+        url: &str,
+    ) -> Result<Option<Response>> {
+        match challenge::cloudflare::handle_challenge(driver, self.config.challenge_timeout).await {
+            Ok(_) => {
+                println!("Cloudflare challenge handled successfully.");
+                Ok(None)
+            }
+            Err(e) => {
+                println!("Failed to handle Cloudflare challenge: {}", e);
+                self.fallback_to_scrappey(url).await
+            }
+        }
+    }
+
+    async fn fallback_to_scrappey(&mut self, url: &str) -> Result<Option<Response>> {
+        let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")
+            .map_err(|_| anyhow::anyhow!("SCRAPPEY_API_KEY environment variable not set"))?;
+        let proxy = std::env::var("SCRAPPEY_PROXY").unwrap_or_default();
+
+        println!("Attempting to resolve challenge with Scrappey...");
+
+        let response =
+            challenge::cloudflare::scrappey_resolve(url.to_string(), scrappey_api_key, &proxy)
+                .await?;
+
+        println!("Scrappey resolved the challenge successfully.");
+
+        // Update cookies from Scrappey response
+        if let Some(cookies) = response.solution.cookies {
+            for cookie in cookies {
+                self.data.cookies.push(cookie.into());
+            }
+        }
+
+        // Update user agent from Scrappey response
+        if let Some(ua) = response.solution.user_agent {
+            self.data.user_agent = ua;
+        }
+
+        Ok(Some(Response {
+            url: response
+                .solution
+                .current_url
+                .unwrap_or_else(|| url.to_string()),
+            status: response.solution.status_code.unwrap_or(200),
+            body: response.solution.response.unwrap_or_default(),
+            cookies: self.data.cookies.clone(),
+            user_agent: self.data.user_agent.clone(),
+        }))
+    }
+
+    async fn extract_response(&mut self, driver: &WebDriver, url: &str) -> Result<Response> {
+        let dev_tools = ChromeDevTools::new(driver.handle.clone());
+
+        // Extract cookies using Chrome DevTools
+        let new_cookies = dev_tools
             .execute_cdp("Storage.getCookies")
             .await?
             .get("cookies")
@@ -148,21 +233,18 @@ impl Browser {
                     .filter_map(|c| serde_json::from_value(c.clone()).ok())
                     .collect::<Vec<Cookie>>()
             });
-        self.data.cookies.extend(cookies.clone());
 
-        let status = 200; // not provided by thirtyfour, so we assume success
-        let cookies = driver.get_all_cookies().await?;
+        self.data.cookies.extend(new_cookies);
+
         let body = driver.source().await?;
-        let user_agent = self.data.user_agent.clone();
-
-        driver.quit().await?;
+        let cookies = driver.get_all_cookies().await?;
 
         Ok(Response {
             url: url.to_string(),
-            status,
+            status: 200, // thirtyfour doesn't provide status, assuming success
             body,
             cookies,
-            user_agent,
+            user_agent: self.data.user_agent.clone(),
         })
     }
 }
