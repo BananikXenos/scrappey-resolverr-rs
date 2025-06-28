@@ -22,6 +22,7 @@ pub mod ddos_guard {
 }
 
 pub mod cloudflare {
+
     use anyhow::Result;
     use thirtyfour::prelude::*;
 
@@ -50,6 +51,7 @@ pub mod cloudflare {
         url: String,
         api_key: String,
         proxy: &str,
+        timeout: u64,
     ) -> Result<ScrappeyResponse> {
         // If we reach here, the challenge was not solved in time, we need to use a third-party service
         let client = ScrappeyClient::new(api_key);
@@ -58,6 +60,6 @@ pub mod cloudflare {
             proxy: Some(proxy.to_string()),
             ..Default::default()
         };
-        client.get(request).await
+        client.get(request, timeout).await
     }
 }

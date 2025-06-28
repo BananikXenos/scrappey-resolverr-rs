@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use thirtyfour::{extensions::cdp::ChromeDevTools, prelude::*};
+use thirtyfour::{Proxy, extensions::cdp::ChromeDevTools, prelude::*};
 
 use crate::challenge::{self, ddos_guard};
 
@@ -9,7 +9,11 @@ use crate::challenge::{self, ddos_guard};
 pub struct BrowserConfig {
     pub webdriver_url: String,
     pub window_size: (u32, u32),
-    pub challenge_timeout: u64,
+    pub proxy_host: String,
+    pub proxy_port: u16,
+    pub proxy_username: Option<String>,
+    pub proxy_password: Option<String>,
+    pub scrappey_api_key: String,
 }
 
 impl Default for BrowserConfig {
@@ -17,7 +21,11 @@ impl Default for BrowserConfig {
         Self {
             webdriver_url: "http://localhost:9515".to_string(),
             window_size: (1920, 1080),
-            challenge_timeout: 30,
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: 1080,
+            proxy_username: None,
+            proxy_password: None,
+            scrappey_api_key: String::new(),
         }
     }
 }
@@ -77,20 +85,34 @@ impl Browser {
     }
 
     // Main navigation method - now much cleaner and focused
-    pub async fn navigate(&mut self, url: &str) -> Result<Response> {
+    pub async fn get(&mut self, url: &str, timeout: u64) -> Result<Response> {
         let mut driver = self.setup_driver().await?;
 
-        self.configure_cookies(&driver).await?;
+        // Use a closure to ensure driver.quit() is always called
+        let result = async {
+            self.configure_cookies(&driver).await?;
+            driver.get(url).await?;
 
-        driver.get(url).await?;
+            if let Some(response) = self.handle_challenges(&mut driver, url, timeout).await? {
+                return Ok(response);
+            }
 
-        self.handle_challenges(&mut driver, url).await?;
+            let response = self.extract_response(&driver, url).await?;
+            Ok(response)
+        }
+        .await;
 
-        let response = self.extract_response(&driver, url).await?;
+        // Always attempt to quit the driver, even if result is Err
+        let quit_result = driver.quit().await;
 
-        driver.quit().await?;
-
-        Ok(response)
+        // If the main logic errored, return that error
+        // Otherwise, if quitting the driver errored, return that error
+        // Otherwise, return the successful response
+        match (result, quit_result) {
+            (Ok(response), Ok(_)) => Ok(response),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e.into()),
+        }
     }
 
     // Broken out methods for specific responsibilities
@@ -106,6 +128,18 @@ impl Browser {
         caps.add_arg(&format!("--user-agent={}", self.data.user_agent))?;
         caps.add_arg("--disable-infobars")?;
         caps.insert_browser_option("excludeSwitches", ["enable-automation"])?;
+
+        // Configure proxy to our local noauth http to auth http bridge
+        caps.set_proxy(Proxy::Manual {
+            ftp_proxy: None,
+            http_proxy: Some("127.0.0.1:8080".to_string()),
+            ssl_proxy: None,
+            socks_proxy: None,
+            socks_version: None,
+            socks_username: None, // unsupported in chromedriver
+            socks_password: None, // unsupported in chromedriver
+            no_proxy: None,
+        })?;
 
         let driver = WebDriver::new(&self.config.webdriver_url, caps).await?;
         Ok(driver)
@@ -147,17 +181,21 @@ impl Browser {
         &mut self,
         driver: &mut WebDriver,
         url: &str,
+        timeout: u64,
     ) -> Result<Option<Response>> {
         // Handle DDoS Guard challenge
         if ddos_guard::is_protected(driver).await {
             println!("DDoS Guard challenge detected, handling...");
-            ddos_guard::handle_challenge(driver, self.config.challenge_timeout).await?;
+            ddos_guard::handle_challenge(driver, timeout).await?;
         }
 
         // Handle Cloudflare challenge
         if challenge::cloudflare::is_protected(driver).await {
             println!("Cloudflare challenge detected, handling...");
-            if let Some(response) = self.handle_cloudflare_challenge(driver, url).await? {
+            if let Some(response) = self
+                .handle_cloudflare_challenge(driver, url, timeout)
+                .await?
+            {
                 return Ok(Some(response));
             }
         }
@@ -169,37 +207,60 @@ impl Browser {
         &mut self,
         driver: &mut WebDriver,
         url: &str,
+        timeout: u64,
     ) -> Result<Option<Response>> {
-        match challenge::cloudflare::handle_challenge(driver, self.config.challenge_timeout).await {
+        match challenge::cloudflare::handle_challenge(driver, timeout / 3).await {
             Ok(_) => {
                 println!("Cloudflare challenge handled successfully.");
                 Ok(None)
             }
             Err(e) => {
                 println!("Failed to handle Cloudflare challenge: {}", e);
-                self.fallback_to_scrappey(url).await
+                // we can close the driver here, but we will try to resolve with Scrappey
+                driver.clone().quit().await?;
+                self.fallback_to_scrappey(url, (timeout / 3) * 2).await
             }
         }
     }
 
-    async fn fallback_to_scrappey(&mut self, url: &str) -> Result<Option<Response>> {
-        let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")
-            .map_err(|_| anyhow::anyhow!("SCRAPPEY_API_KEY environment variable not set"))?;
-        let proxy = std::env::var("SCRAPPEY_PROXY").unwrap_or_default();
+    async fn fallback_to_scrappey(&mut self, url: &str, timeout: u64) -> Result<Option<Response>> {
+        if self.config.scrappey_api_key.is_empty() {
+            return Err(anyhow::anyhow!("Scrappey API key not configured"));
+        }
+
+        // create a proxy string for Scrappey, if username and password are provided also include them
+        let proxy = if let (Some(username), Some(password)) =
+            (&self.config.proxy_username, &self.config.proxy_password)
+        {
+            format!(
+                "http://{}:{}@{}:{}",
+                username, password, self.config.proxy_host, self.config.proxy_port
+            )
+        } else {
+            format!(
+                "http://{}:{}",
+                self.config.proxy_host, self.config.proxy_port
+            )
+        };
 
         println!("Attempting to resolve challenge with Scrappey...");
 
-        let response =
-            challenge::cloudflare::scrappey_resolve(url.to_string(), scrappey_api_key, &proxy)
-                .await?;
+        let response = challenge::cloudflare::scrappey_resolve(
+            url.to_string(),
+            self.config.scrappey_api_key.clone(),
+            &proxy,
+            timeout,
+        )
+        .await?;
 
         println!("Scrappey resolved the challenge successfully.");
 
+        // Print debug information
+        println!("Scrappey response: {:?}", response);
+
         // Update cookies from Scrappey response
-        if let Some(cookies) = response.solution.cookies {
-            for cookie in cookies {
-                self.data.cookies.push(cookie.into());
-            }
+        for cookie in response.solution.cookies.unwrap() {
+            self.data.cookies.push(cookie.into());
         }
 
         // Update user agent from Scrappey response
@@ -234,7 +295,7 @@ impl Browser {
                     .collect::<Vec<Cookie>>()
             });
 
-        self.data.cookies.extend(new_cookies);
+        self.data.cookies = new_cookies;
 
         let body = driver.source().await?;
         let cookies = driver.get_all_cookies().await?;

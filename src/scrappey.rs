@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -21,8 +23,22 @@ impl ScrappeyClient {
         }
     }
 
+    /// Check remaining balance (number of requests left)
+    pub async fn get_balance(&self, timeout: u64) -> Result<ScrappeyBalance> {
+        let resp = self
+            .client
+            .get(format!("{}/balance?key={}", self.endpoint, self.api_key))
+            .timeout(std::time::Duration::from_secs(timeout))
+            .send()
+            .await?;
+
+        resp.json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse balance response: {}", e))
+    }
+
     /// Make a GET request via Scrappey
-    pub async fn get(&self, req: ScrappeyGetRequest) -> Result<ScrappeyResponse> {
+    pub async fn get(&self, req: ScrappeyGetRequest, timeout: u64) -> Result<ScrappeyResponse> {
         let mut payload = serde_json::to_value(&req)?.as_object().unwrap().clone();
         payload.insert("cmd".to_string(), Value::String("request.get".to_string()));
         let resp = self
@@ -30,6 +46,7 @@ impl ScrappeyClient {
             .post(format!("{}?key={}", self.endpoint, self.api_key))
             .header("Content-Type", "application/json")
             .json(&payload)
+            .timeout(std::time::Duration::from_secs(timeout))
             .send()
             .await?;
         resp.json()
@@ -38,7 +55,7 @@ impl ScrappeyClient {
     }
 
     /// Make a POST request via Scrappey
-    pub async fn post(&self, req: ScrappeyPostRequest) -> Result<ScrappeyResponse> {
+    pub async fn post(&self, req: ScrappeyPostRequest, timeout: u64) -> Result<ScrappeyResponse> {
         let mut payload = serde_json::to_value(&req)?.as_object().unwrap().clone();
         payload.insert("cmd".to_string(), Value::String("request.post".to_string()));
         let resp = self
@@ -46,12 +63,20 @@ impl ScrappeyClient {
             .post(format!("{}?key={}", self.endpoint, self.api_key))
             .header("Content-Type", "application/json")
             .json(&payload)
+            .timeout(std::time::Duration::from_secs(timeout))
             .send()
             .await?;
         resp.json()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to parse Scrappey response: {}", e))
     }
+}
+
+/// Balance response from Scrappey API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScrappeyBalance {
+    /// Number of requests remaining in your balance
+    pub balance: u64,
 }
 
 /// Parameters for Scrappey GET requests
