@@ -33,6 +33,7 @@ impl ScrappeyClient {
         let resp = self
             .client
             .get(format!("{}/balance?key={}", self.endpoint, self.api_key))
+            .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(timeout))
             .send()
             .await?;
@@ -82,7 +83,7 @@ impl ScrappeyClient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyBalance {
     /// Number of requests remaining in your balance
-    pub balance: u64,
+    pub balance: f64,
 }
 
 /// Parameters for Scrappey GET requests
