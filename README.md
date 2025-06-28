@@ -12,21 +12,21 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
 
 ## How it Works ⚙️
 
-1. **API Requests:**  
+1. **API Requests:**
    The server exposes endpoints compatible with FlareSolverr (`/v1`, `/health`, `/`).
 
-2. **Challenge Handling:**  
+2. **Challenge Handling:**
    - Receives a request to fetch a URL.
    - Launches a headful Chrome session (not headless) via `chromedriver`, running inside a virtual display using the `transparent` library and `xvfb-run`.
    - Navigates to the target URL, handling cookies and user-agent spoofing.
    - Detects and solves anti-bot challenges (Cloudflare, DDoS-Guard) automatically.
    - If browser-based solving fails, falls back to the [Scrappey](https://scrappey.com/) API.
 
-3. **Proxy Bridge:**  
+3. **Proxy Bridge:**
    - Runs a local HTTP proxy on port `8080` that forwards requests to an upstream authenticated HTTP proxy (as configured in Docker).
    - Chrome is configured to use this bridge, enabling authenticated proxy support.
 
-4. **Persistence:**  
+4. **Persistence:**
    - Cookies and user-agent are persisted to disk (`/data/persistent.json`) for session continuity.
 
 ---
@@ -79,7 +79,7 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
    - Build and run `scrappey-resolverr-rs` (`scrappey-resolverr` service)
    - Launch Chrome and chromedriver inside the container
 
-4. **API will be available at:**  
+4. **API will be available at:**
    `http://localhost:8191` 🎯
 
 ---
@@ -145,18 +145,18 @@ curl -X POST http://localhost:8191/v1 \
 
 ## Prowlarr Configuration 🦁🔧
 
-To use scrappey-resolverr-rs with [Prowlarr](https://github.com/Prowlarr/Prowlarr): 
+To use scrappey-resolverr-rs with [Prowlarr](https://github.com/Prowlarr/Prowlarr):
 
 ### 1. Go to Settings → Indexers ⚙️
 
 ### 2. Add Two Proxies 🧩
 
-**FlareSolverr Proxy:** 🌩️  
+**FlareSolverr Proxy:** 🌩️
 - **Host:** Locally connectable IP of your scrappey-resolverr instance (e.g., the LAN IP or Docker network IP accessible from your Prowlarr host)
 - **Port:** 8191 (default FlareSolverr port)
 - **Tags:** a tag like `scrappey`
 
-**HTTP Proxy:** 🌐  
+**HTTP Proxy:** 🌐
 - **Host:** Your **publicly exposed** proxy address (the proxy must be accessible from the public internet, as Scrappey will use it externally to act on your IP)
 - **Port:** Your `PROXY_PORT`
 - **Username:** Your `PROXY_USERNAME`
@@ -178,4 +178,4 @@ The HTTP proxy is essential for maintaining **IP persistence**. This means that 
 
 ## License 📄
 
-MIT
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
