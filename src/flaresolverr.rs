@@ -16,7 +16,6 @@ use crate::browser::{Browser, BrowserConfig};
 /// This module implements the FlareSolverr-compatible API server.
 /// It provides endpoints for challenge-solving automation, health checks, and session management.
 /// The main entrypoint is FlareSolverrAPI, which wires up the Axum router.
-
 const STATUS_OK: &str = "ok";
 const STATUS_ERROR: &str = "error";
 const FLARESOLVERR_VERSION: &str = "3.3.21"; // Version string for compatibility

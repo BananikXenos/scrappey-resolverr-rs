@@ -273,8 +273,10 @@ impl Browser {
         debug!("Scrappey response: {response:?}");
 
         // Update cookies from Scrappey response
-        for cookie in response.solution.cookies.unwrap() {
-            self.data.cookies.push(cookie.into());
+        if let Some(cookies) = response.solution.cookies {
+            for cookie in cookies {
+                self.data.cookies.push(cookie.into());
+            }
         }
 
         // Update user agent from Scrappey response
