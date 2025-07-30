@@ -153,6 +153,8 @@ pub struct FlareSolverrConfig {
     pub proxy_password: Option<String>,
     pub scrappey_api_key: String,
     pub data_path: String,
+    pub capture_failure_screenshots: bool,
+    pub screenshot_dir: String,
 }
 
 /// Main API struct for FlareSolverr-compatible server.
@@ -315,6 +317,8 @@ async fn handle_request_get(
         proxy_username: config.proxy_username.clone(),
         proxy_password: config.proxy_password.clone(),
         scrappey_api_key: config.scrappey_api_key,
+        capture_failure_screenshots: config.capture_failure_screenshots,
+        screenshot_dir: config.screenshot_dir,
         ..Default::default()
     });
 

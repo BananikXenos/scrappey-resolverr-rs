@@ -1459,6 +1459,7 @@ dependencies = [
  "tokio",
  "transparent",
  "ua_generator",
+ "url",
 ]
 
 [[package]]

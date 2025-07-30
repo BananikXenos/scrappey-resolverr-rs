@@ -16,6 +16,8 @@ pub struct BrowserConfig {
     pub proxy_username: Option<String>,
     pub proxy_password: Option<String>,
     pub scrappey_api_key: String,
+    pub capture_failure_screenshots: bool,
+    pub screenshot_dir: String,
 }
 
 impl Default for BrowserConfig {
@@ -28,6 +30,8 @@ impl Default for BrowserConfig {
             proxy_username: None,
             proxy_password: None,
             scrappey_api_key: String::new(),
+            capture_failure_screenshots: true,
+            screenshot_dir: "/data/screenshots".to_string(),
         }
     }
 }
@@ -113,6 +117,14 @@ impl Browser {
             Ok(response)
         }
         .await;
+
+        // Take screenshot on failure if enabled
+        if result.is_err()
+            && self.config.capture_failure_screenshots
+            && let Err(screenshot_err) = self.capture_failure_screenshot(&driver, url).await
+        {
+            warn!("Failed to capture failure screenshot: {}", screenshot_err);
+        }
 
         // Always attempt to quit the driver, even if result is Err
         let quit_result = driver.quit().await;
@@ -230,8 +242,6 @@ impl Browser {
             }
             Err(e) => {
                 warn!("Failed to handle Cloudflare challenge: {e}");
-                // If challenge fails, close driver and try Scrappey fallback
-                driver.clone().quit().await?;
                 self.fallback_to_scrappey(url, (timeout / 3) * 2).await
             }
         }
@@ -324,5 +334,26 @@ impl Browser {
             cookies,
             user_agent: self.data.user_agent.clone(),
         })
+    }
+
+    /// Capture a screenshot when challenge resolution fails for debugging purposes.
+    async fn capture_failure_screenshot(&self, driver: &WebDriver, url: &str) -> Result<()> {
+        // Create screenshot directory if it doesn't exist
+        std::fs::create_dir_all(&self.config.screenshot_dir)?;
+
+        // Generate filename with timestamp and domain
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let domain = url::Url::parse(url)
+            .map(|u| u.host_str().unwrap_or("unknown").to_string())
+            .unwrap_or_else(|_| "invalid_url".to_string());
+        let filename = format!("failure_{}_{}.png", domain, timestamp);
+        let filepath = std::path::Path::new(&self.config.screenshot_dir).join(filename);
+
+        // Take screenshot
+        let screenshot_data = driver.screenshot_as_png().await?;
+        std::fs::write(&filepath, screenshot_data)?;
+
+        info!("Failure screenshot saved to: {}", filepath.display());
+        Ok(())
     }
 }

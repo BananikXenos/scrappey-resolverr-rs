@@ -28,6 +28,7 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
 
 4. **Persistence:**
    - Cookies and user-agent are persisted to disk (`/data/persistent.json`) for session continuity.
+   - Failure screenshots are automatically captured when challenges fail (saved to `/data/screenshots/`).
 
 ---
 
@@ -167,11 +168,37 @@ curl -X POST http://localhost:8191/v1 \
 
 ---
 
+## Configuration 🔧
+
+### Environment Variables
+
+- `SCRAPPEY_API_KEY` - Your Scrappey API key (required)
+- `PROXY_HOST` - HTTP proxy hostname (required)
+- `PROXY_PORT` - HTTP proxy port (required)
+- `PROXY_USERNAME` - HTTP proxy username (optional)
+- `PROXY_PASSWORD` - HTTP proxy password (optional)
+- `DATA_PATH` - Path to persistent data file (default: `/data/persistent.json`)
+- `CAPTURE_FAILURE_SCREENSHOTS` - Enable/disable failure screenshots (default: `true`)
+- `SCREENSHOT_DIR` - Directory for failure screenshots (default: `/data/screenshots`)
+- `HOST` - Server bind address (default: `0.0.0.0`)
+- `PORT` - Server port (default: `8191`)
+
+### Failure Screenshots 📸
+
+When challenge resolution fails, the system automatically captures screenshots for debugging purposes. These are saved with timestamps and domain names:
+
+- **Location:** `/data/screenshots/` (configurable via `SCREENSHOT_DIR`)
+- **Format:** `failure_{domain}_{timestamp}.png` or `ddos_guard_failure_{domain}_{timestamp}.png`
+- **Control:** Set `CAPTURE_FAILURE_SCREENSHOTS=false` to disable
+
+Example screenshot filename: `failure_example.com_20240315_143022.png`
+
 ## Notes
 
 - **Persistence:** Cookies and user-agent are saved in `/data/persistent.json` (mounted as a Docker volume).
 - **Proxy:** Chrome always connects to the local proxy bridge (`127.0.0.1:8080`), which forwards to your configured authenticated proxy.
 - **Fallback:** If browser-based solving fails, Scrappey API is used (requires a valid API key and balance).
+- **Screenshots:** Failure screenshots are automatically captured for debugging when challenges cannot be solved.
 - **Sessions:** Session management is not implemented (stateless per request).
 
 ---

@@ -55,6 +55,12 @@ fn load_config() -> Result<FlareSolverrConfig> {
     let proxy_password = std::env::var("PROXY_PASSWORD").ok();
     let data_path =
         std::env::var("DATA_PATH").unwrap_or_else(|_| "/data/persistent.json".to_string());
+    let capture_failure_screenshots = std::env::var("CAPTURE_FAILURE_SCREENSHOTS")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+    let screenshot_dir =
+        std::env::var("SCREENSHOT_DIR").unwrap_or_else(|_| "/data/screenshots".to_string());
 
     Ok(FlareSolverrConfig {
         proxy_host,
@@ -63,6 +69,8 @@ fn load_config() -> Result<FlareSolverrConfig> {
         proxy_password,
         scrappey_api_key,
         data_path,
+        capture_failure_screenshots,
+        screenshot_dir,
     })
 }
 
