@@ -76,14 +76,20 @@ impl ScrappeyConfig {
 pub struct ScreenshotConfig {
     pub capture_failure_screenshots: bool,
     pub screenshot_dir: String,
+    pub max_failure_screenshots: usize,
 }
 
 #[allow(dead_code)]
 impl ScreenshotConfig {
-    pub fn new(capture_failure_screenshots: bool, screenshot_dir: String) -> Self {
+    pub fn new(
+        capture_failure_screenshots: bool,
+        screenshot_dir: String,
+        max_failure_screenshots: usize,
+    ) -> Self {
         Self {
             capture_failure_screenshots,
             screenshot_dir,
+            max_failure_screenshots,
         }
     }
 
@@ -91,6 +97,7 @@ impl ScreenshotConfig {
         Self {
             capture_failure_screenshots: false,
             screenshot_dir: "/tmp".to_string(),
+            max_failure_screenshots: 10,
         }
     }
 }
@@ -100,6 +107,7 @@ impl Default for ScreenshotConfig {
         Self {
             capture_failure_screenshots: true,
             screenshot_dir: "/data/screenshots".to_string(),
+            max_failure_screenshots: 10,
         }
     }
 }
@@ -229,6 +237,10 @@ pub fn load_from_env() -> Result<ServerConfig> {
         .unwrap_or(true);
     let screenshot_dir =
         std::env::var("SCREENSHOT_DIR").unwrap_or_else(|_| "/data/screenshots".to_string());
+    let max_failure_screenshots = std::env::var("MAX_FAILURE_SCREENSHOTS")
+        .unwrap_or_else(|_| "10".to_string())
+        .parse::<usize>()
+        .unwrap_or(10);
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "8191".to_string())
@@ -242,7 +254,11 @@ pub fn load_from_env() -> Result<ServerConfig> {
     };
 
     let scrappey = ScrappeyConfig::new(scrappey_api_key);
-    let screenshots = ScreenshotConfig::new(capture_failure_screenshots, screenshot_dir);
+    let screenshots = ScreenshotConfig::new(
+        capture_failure_screenshots,
+        screenshot_dir,
+        max_failure_screenshots,
+    );
 
     Ok(ServerConfig::new(
         proxy,

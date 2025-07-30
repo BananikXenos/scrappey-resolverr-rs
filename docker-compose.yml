@@ -24,6 +24,7 @@ services:
       - DATA_PATH=/data/persistent.json # Path to store cookies and other data (Optional)
       - CAPTURE_FAILURE_SCREENSHOTS=true # Capture screenshots on failure (Optional)
       - SCREENSHOT_DIR=/data/screenshots # Directory to store screenshots (Optional)
+      - MAX_FAILURE_SCREENSHOTS=10 # Maximum number of failure screenshots to keep (Optional)
       - PROXY_HOST=proxy-public # Publically accessible proxy hostname (Required)
       - PROXY_PORT=8081 # Port of the proxy (Required)
       - PROXY_USERNAME=username # Proxy authentication username (Optional)

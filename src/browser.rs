@@ -299,6 +299,9 @@ impl Browser {
         // Create screenshot directory if it doesn't exist
         std::fs::create_dir_all(&self.config.screenshots.screenshot_dir)?;
 
+        // Clean up old screenshots first
+        self.cleanup_old_screenshots()?;
+
         // Generate filename with timestamp and domain
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         let domain = url::Url::parse(url)
@@ -312,6 +315,71 @@ impl Browser {
         std::fs::write(&filepath, screenshot_data)?;
 
         info!("Failure screenshot saved to: {}", filepath.display());
+        Ok(())
+    }
+
+    /// Clean up old failure screenshots, keeping only the N most recent ones.
+    fn cleanup_old_screenshots(&self) -> Result<()> {
+        let screenshot_dir = std::path::Path::new(&self.config.screenshots.screenshot_dir);
+
+        // If directory doesn't exist, nothing to clean up
+        if !screenshot_dir.exists() {
+            return Ok(());
+        }
+
+        // Get all failure screenshot files
+        let mut screenshot_files: Vec<_> = std::fs::read_dir(screenshot_dir)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+
+                // Only consider PNG files that start with "failure_"
+                if path.is_file()
+                    && path.extension().and_then(|s| s.to_str()) == Some("png")
+                    && path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|name| name.starts_with("failure_"))
+                {
+                    // Get the modification time for sorting
+                    let metadata = entry.metadata().ok()?;
+                    let modified = metadata.modified().ok()?;
+                    Some((path, modified))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by modification time (newest first)
+        screenshot_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Remove old screenshots if we exceed the limit
+        if screenshot_files.len() > self.config.screenshots.max_failure_screenshots {
+            let files_to_remove =
+                &screenshot_files[self.config.screenshots.max_failure_screenshots..];
+
+            for (file_path, _) in files_to_remove {
+                if let Err(e) = std::fs::remove_file(file_path) {
+                    warn!(
+                        "Failed to remove old screenshot {}: {}",
+                        file_path.display(),
+                        e
+                    );
+                } else {
+                    debug!("Removed old screenshot: {}", file_path.display());
+                }
+            }
+
+            if !files_to_remove.is_empty() {
+                info!(
+                    "Cleaned up {} old failure screenshots, keeping {} most recent",
+                    files_to_remove.len(),
+                    self.config.screenshots.max_failure_screenshots
+                );
+            }
+        }
+
         Ok(())
     }
 }
