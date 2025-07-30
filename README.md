@@ -41,7 +41,8 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
 - **Dockerized:** All dependencies (Chrome, chromedriver, proxy) managed via Docker Compose.
 
 **Key Components:**
-- `src/main.rs` — Entrypoint, config, server, and process management.
+- `src/main.rs` — Entrypoint, server, and process management.
+- `src/config.rs` — Configuration management and environment variable loading.
 - `src/flaresolverr.rs` — FlareSolverr-compatible API handlers.
 - `src/browser.rs` — Browser automation and challenge logic.
 - `src/challenge.rs` — Challenge detection and solving.
@@ -63,10 +64,13 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
 
 You can use the prebuilt image from GitHub Container Registry without building locally:
 
-1. **Configure environment variables:**
+1. **Configure required environment variables:**
    Edit `docker-compose.yml` and set:
    - `SCRAPPEY_API_KEY` (get from [Scrappey](https://scrappey.com/))
-   - `PROXY_HOST`, `PROXY_PORT`, `PROXY_USERNAME`, `PROXY_PASSWORD` (your HTTP proxy credentials)
+   - `PROXY_HOST`, `PROXY_PORT` (your HTTP proxy details)
+   - `PROXY_USERNAME`, `PROXY_PASSWORD` (optional, for authenticated proxies)
+   
+   Note: Many environment variables have sensible defaults and are commented out in the docker-compose.yml file. Uncomment and modify them only if you need to change the defaults.
 
 2. **Update your `docker-compose.yml`:**
    In the `scrappey-resolverr` service section, set the image to:
@@ -98,10 +102,13 @@ You can use the prebuilt image from GitHub Container Registry without building l
    cd scrappey-resolverr-rs
    ```
 
-2. **Configure environment variables:**
+2. **Configure required environment variables:**
    Edit `docker-compose.yml` and set:
    - `SCRAPPEY_API_KEY` (get from [Scrappey](https://scrappey.com/))
-   - `PROXY_HOST`, `PROXY_PORT`, `PROXY_USERNAME`, `PROXY_PASSWORD` (your HTTP proxy credentials)
+   - `PROXY_HOST`, `PROXY_PORT` (your HTTP proxy details)
+   - `PROXY_USERNAME`, `PROXY_PASSWORD` (optional, for authenticated proxies)
+   
+   Note: Many environment variables have sensible defaults and are commented out in the docker-compose.yml file. Uncomment and modify them only if you need to change the defaults.
 
 3. **Start the services:**
    ```sh
@@ -180,6 +187,7 @@ curl -X POST http://localhost:8191/v1 \
 - `DATA_PATH` - Path to persistent data file (default: `/data/persistent.json`)
 - `CAPTURE_FAILURE_SCREENSHOTS` - Enable/disable failure screenshots (default: `true`)
 - `SCREENSHOT_DIR` - Directory for failure screenshots (default: `/data/screenshots`)
+- `MAX_FAILURE_SCREENSHOTS` - Maximum number of failure screenshots to keep (default: `10`)
 - `HOST` - Server bind address (default: `0.0.0.0`)
 - `PORT` - Server port (default: `8191`)
 
@@ -190,6 +198,7 @@ When challenge resolution fails, the system automatically captures screenshots f
 - **Location:** `/data/screenshots/` (configurable via `SCREENSHOT_DIR`)
 - **Format:** `failure_{domain}_{timestamp}.png` or `ddos_guard_failure_{domain}_{timestamp}.png`
 - **Control:** Set `CAPTURE_FAILURE_SCREENSHOTS=false` to disable
+- **Cleanup:** Old screenshots are automatically cleaned up when the limit is exceeded (configurable via `MAX_FAILURE_SCREENSHOTS`)
 
 Example screenshot filename: `failure_example.com_20240315_143022.png`
 
