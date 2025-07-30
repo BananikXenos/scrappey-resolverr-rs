@@ -69,7 +69,7 @@ You can use the prebuilt image from GitHub Container Registry without building l
    - `SCRAPPEY_API_KEY` (get from [Scrappey](https://scrappey.com/))
    - `PROXY_HOST`, `PROXY_PORT` (your HTTP proxy details)
    - `PROXY_USERNAME`, `PROXY_PASSWORD` (optional, for authenticated proxies)
-   
+
    Note: Many environment variables have sensible defaults and are commented out in the docker-compose.yml file. Uncomment and modify them only if you need to change the defaults.
 
 2. **Update your `docker-compose.yml`:**
@@ -107,7 +107,7 @@ You can use the prebuilt image from GitHub Container Registry without building l
    - `SCRAPPEY_API_KEY` (get from [Scrappey](https://scrappey.com/))
    - `PROXY_HOST`, `PROXY_PORT` (your HTTP proxy details)
    - `PROXY_USERNAME`, `PROXY_PASSWORD` (optional, for authenticated proxies)
-   
+
    Note: Many environment variables have sensible defaults and are commented out in the docker-compose.yml file. Uncomment and modify them only if you need to change the defaults.
 
 3. **Start the services:**
@@ -242,6 +242,20 @@ This ensures that requests for those indexers are routed through both the FlareS
 **Why is the HTTP proxy required?** 🤔
 
 The HTTP proxy is essential for maintaining **IP persistence**. This means that cookies and sessions remain valid across requests, as all browser and API traffic is routed through the same outgoing IP. 🍪🔒 As a result, cookies and user-agents do **not** need to be refreshed on every call, which dramatically reduces the number of Scrappey API calls required. This leads to more stable scraping sessions and significant savings on Scrappey usage. 💸✨
+
+---
+
+## Sources & Tools 🛠️
+
+This project was built using and inspired by the following sources and tools:
+
+### Core Inspiration 💡
+- **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)** - The original Python-based anti-bot challenge solver that this project aims to replace with a faster Rust implementation
+- **[scrappey_proxy by AnthonyRAFFY](https://github.com/AnthonyRAFFY/scrappey_proxy)** - Reference implementation and inspiration for Scrappey API integration
+
+### Development Tools 🔧
+- **[GitHub Copilot](https://github.com/features/copilot)** - AI-powered code completion and assistance
+- **[Zed Editor](https://zed.dev/)** - Modern, high-performance code editor used for development
 
 ---
 
