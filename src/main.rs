@@ -109,6 +109,28 @@ fn start_chromedriver() -> Result<TransparentChild> {
     Ok(chromedriver)
 }
 
+/// Create a shutdown signal handler that waits for SIGINT or SIGTERM
+/// Returns a future that completes when a shutdown signal is received.
+async fn shutdown_signal() {
+    use tokio::signal;
+
+    // Wait for either SIGINT or SIGTERM
+    let ctrl_c = signal::ctrl_c();
+    #[cfg(unix)]
+    let terminate = {
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+        async move { sigterm.recv().await }
+    };
+    #[cfg(not(unix))]
+    let terminate = async { std::future::pending::<()>().await };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    info!("Shutdown signal received, shutting down...");
+}
+
 /// Run the Axum server with graceful shutdown and chromedriver cleanup
 /// Run the Axum API server with graceful shutdown and chromedriver cleanup.
 /// Binds to the configured address, serves requests, and handles SIGINT/SIGTERM for shutdown.
@@ -116,10 +138,7 @@ async fn run_server(
     config: FlareSolverrConfig,
     chromedriver: &mut std::process::Child,
 ) -> Result<()> {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::net::TcpListener;
-    use tokio::signal;
 
     // Get host and port from environment or use defaults
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -138,32 +157,8 @@ async fn run_server(
     // Create the TCP listener
     let listener = TcpListener::bind(&addr).await?;
 
-    // Setup shutdown flag for graceful shutdown
-    let shutdown_flag = Arc::new(AtomicBool::new(false));
-    let shutdown_flag_clone = shutdown_flag.clone();
-
-    // Define shutdown signal handler (SIGINT/SIGTERM)
-    let shutdown_signal = async move {
-        // Wait for either SIGINT or SIGTERM
-        let ctrl_c = signal::ctrl_c();
-        #[cfg(unix)]
-        let terminate = {
-            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
-            async move { sigterm.recv().await }
-        };
-        #[cfg(not(unix))]
-        let terminate = async { std::future::pending::<()>().await };
-
-        tokio::select! {
-            _ = ctrl_c => {},
-            _ = terminate => {},
-        }
-        shutdown_flag_clone.store(true, Ordering::SeqCst);
-        info!("Shutdown signal received, shutting down...");
-    };
-
     // Start the server with graceful shutdown
-    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal);
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
     // Wait for the server to finish
     server.await?;
