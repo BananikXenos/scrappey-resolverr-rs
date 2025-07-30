@@ -14,7 +14,7 @@ use tokio::net::{TcpListener, TcpStream};
 /// Configuration for the HTTP-to-HTTP proxy bridge.
 /// Allows specifying upstream proxy address, port, and optional authentication.
 #[derive(Debug, Clone)]
-pub struct ProxyConfig {
+pub struct FwdProxyConfig {
     /// Downstream HTTP proxy server address
     pub http_proxy_addr: String,
     /// Downstream HTTP proxy server port
@@ -25,7 +25,7 @@ pub struct ProxyConfig {
     pub password: Option<String>,
 }
 
-impl ProxyConfig {
+impl FwdProxyConfig {
     /// Create a new proxy configuration without authentication.
     pub fn new(http_proxy_addr: String, http_proxy_port: u16) -> Self {
         Self {
@@ -55,13 +55,13 @@ impl ProxyConfig {
 /// HTTP-to-HTTP proxy bridge server.
 /// Listens for local connections and forwards them to the configured upstream proxy.
 pub struct HttpProxyBridge {
-    config: Arc<ProxyConfig>,
+    config: Arc<FwdProxyConfig>,
     listener: Option<TcpListener>,
 }
 
 impl HttpProxyBridge {
     /// Create a new proxy bridge with the given configuration.
-    pub fn new(config: ProxyConfig) -> Self {
+    pub fn new(config: FwdProxyConfig) -> Self {
         Self {
             config: Arc::new(config),
             listener: None,
@@ -117,7 +117,7 @@ impl HttpProxyBridge {
 
 /// Convenience function to create and run a proxy bridge server.
 /// Binds and serves on the given address.
-pub async fn run_http_proxy_bridge(bind_addr: SocketAddr, config: ProxyConfig) -> Result<()> {
+pub async fn run_http_proxy_bridge(bind_addr: SocketAddr, config: FwdProxyConfig) -> Result<()> {
     let mut bridge = HttpProxyBridge::new(config);
     bridge.bind(bind_addr).await?;
     bridge.serve().await
@@ -128,7 +128,7 @@ pub async fn run_http_proxy_bridge(bind_addr: SocketAddr, config: ProxyConfig) -
 async fn handle_client(
     client_stream: TcpStream,
     client_addr: SocketAddr,
-    config: Arc<ProxyConfig>,
+    config: Arc<FwdProxyConfig>,
 ) -> Result<()> {
     log::info!("New client connection from {client_addr}");
 
@@ -164,7 +164,7 @@ async fn handle_client(
 async fn handle_connect_method(
     client_reader: BufReader<TcpStream>,
     target: &str,
-    config: Arc<ProxyConfig>,
+    config: Arc<FwdProxyConfig>,
 ) -> Result<()> {
     log::info!("Handling CONNECT to {target}");
 
@@ -245,7 +245,7 @@ async fn handle_connect_method(
 async fn handle_regular_method(
     mut client_reader: BufReader<TcpStream>,
     request_line: &str,
-    config: Arc<ProxyConfig>,
+    config: Arc<FwdProxyConfig>,
 ) -> Result<()> {
     log::info!("Handling regular request: {}", request_line.trim());
 
@@ -299,7 +299,7 @@ async fn forward_streams(mut client_stream: TcpStream, mut proxy_stream: TcpStre
 
 /// Establish a raw TCP connection to the downstream proxy.
 /// Resolves the address and connects asynchronously.
-async fn connect_to_downstream_proxy(config: &ProxyConfig) -> Result<TcpStream> {
+async fn connect_to_downstream_proxy(config: &FwdProxyConfig) -> Result<TcpStream> {
     let addr = format!("{}:{}", config.http_proxy_addr, config.http_proxy_port);
     let mut proxy_addrs = addr.to_socket_addrs()?;
 

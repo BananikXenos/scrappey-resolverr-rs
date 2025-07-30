@@ -4,37 +4,7 @@ use serde::{Deserialize, Serialize};
 use thirtyfour::{Proxy, extensions::cdp::ChromeDevTools, prelude::*};
 
 use crate::challenge::{self, ddos_guard};
-
-/// Configuration for browser automation, extracted to avoid hard-coded values.
-/// Allows flexible setup for WebDriver, proxy, and Scrappey integration.
-#[derive(Debug, Clone)]
-pub struct BrowserConfig {
-    pub webdriver_url: String,
-    pub window_size: (u32, u32),
-    pub proxy_host: String,
-    pub proxy_port: u16,
-    pub proxy_username: Option<String>,
-    pub proxy_password: Option<String>,
-    pub scrappey_api_key: String,
-    pub capture_failure_screenshots: bool,
-    pub screenshot_dir: String,
-}
-
-impl Default for BrowserConfig {
-    fn default() -> Self {
-        Self {
-            webdriver_url: "http://localhost:9515".to_string(),
-            window_size: (1920, 1080),
-            proxy_host: "127.0.0.1".to_string(),
-            proxy_port: 1080,
-            proxy_username: None,
-            proxy_password: None,
-            scrappey_api_key: String::new(),
-            capture_failure_screenshots: true,
-            screenshot_dir: "/data/screenshots".to_string(),
-        }
-    }
-}
+use crate::config::BrowserConfig;
 
 /// Stores browser session data such as user agent and cookies.
 /// This struct is serializable for persistence between runs.
@@ -120,7 +90,7 @@ impl Browser {
 
         // Take screenshot on failure if enabled
         if result.is_err()
-            && self.config.capture_failure_screenshots
+            && self.config.screenshots.capture_failure_screenshots
             && let Err(screenshot_err) = self.capture_failure_screenshot(&driver, url).await
         {
             warn!("Failed to capture failure screenshot: {}", screenshot_err);
@@ -145,7 +115,7 @@ impl Browser {
         caps.add_arg("--disable-blink-features=AutomationControlled")?;
         caps.add_arg(&format!(
             "--window-size={},{}",
-            self.config.window_size.0, self.config.window_size.1
+            self.config.webdriver.window_size.0, self.config.webdriver.window_size.1
         ))?;
         caps.add_arg(&format!("--user-agent={}", self.data.user_agent))?;
         caps.add_arg("--disable-infobars")?;
@@ -163,7 +133,7 @@ impl Browser {
             no_proxy: None,
         })?;
 
-        let driver = WebDriver::new(&self.config.webdriver_url, caps).await?;
+        let driver = WebDriver::new(&self.config.webdriver.url, caps).await?;
         Ok(driver)
     }
 
@@ -250,30 +220,18 @@ impl Browser {
     /// Use Scrappey API as a fallback to solve anti-bot challenges.
     /// Updates cookies and user agent from Scrappey response.
     async fn fallback_to_scrappey(&mut self, url: &str, timeout: u64) -> Result<Option<Response>> {
-        if self.config.scrappey_api_key.is_empty() {
+        if !self.config.scrappey.is_configured() {
             return Err(anyhow::anyhow!("Scrappey API key not configured"));
         }
 
-        // Build proxy string for Scrappey, including credentials if present
-        let proxy = if let (Some(username), Some(password)) =
-            (&self.config.proxy_username, &self.config.proxy_password)
-        {
-            format!(
-                "http://{}:{}@{}:{}",
-                username, password, self.config.proxy_host, self.config.proxy_port
-            )
-        } else {
-            format!(
-                "http://{}:{}",
-                self.config.proxy_host, self.config.proxy_port
-            )
-        };
+        // Build proxy string for Scrappey
+        let proxy = self.config.proxy.to_url();
 
         info!("Attempting to resolve challenge with Scrappey... (this may take 20-40 seconds)");
 
         let response = challenge::cloudflare::scrappey_resolve(
             url.to_string(),
-            self.config.scrappey_api_key.clone(),
+            self.config.scrappey.api_key.clone(),
             &proxy,
             timeout,
         )
@@ -339,7 +297,7 @@ impl Browser {
     /// Capture a screenshot when challenge resolution fails for debugging purposes.
     async fn capture_failure_screenshot(&self, driver: &WebDriver, url: &str) -> Result<()> {
         // Create screenshot directory if it doesn't exist
-        std::fs::create_dir_all(&self.config.screenshot_dir)?;
+        std::fs::create_dir_all(&self.config.screenshots.screenshot_dir)?;
 
         // Generate filename with timestamp and domain
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
@@ -347,7 +305,7 @@ impl Browser {
             .map(|u| u.host_str().unwrap_or("unknown").to_string())
             .unwrap_or_else(|_| "invalid_url".to_string());
         let filename = format!("failure_{}_{}.png", domain, timestamp);
-        let filepath = std::path::Path::new(&self.config.screenshot_dir).join(filename);
+        let filepath = std::path::Path::new(&self.config.screenshots.screenshot_dir).join(filename);
 
         // Take screenshot
         let screenshot_data = driver.screenshot_as_png().await?;

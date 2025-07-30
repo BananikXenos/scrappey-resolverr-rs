@@ -5,10 +5,12 @@ use transparent::TransparentChild;
 // Module imports for browser automation, challenge handling, API server, proxy bridge, and Scrappey integration.
 mod browser;
 mod challenge;
+mod config;
 mod flaresolverr;
 mod fwd_proxy;
 mod scrappey;
-use flaresolverr::{FlareSolverrAPI, FlareSolverrConfig};
+use config::ServerConfig;
+use flaresolverr::FlareSolverrAPI;
 
 use crate::scrappey::ScrappeyClient;
 
@@ -20,11 +22,11 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     // Load configuration from environment variables
-    let config = load_config()?;
+    let config = config::load_from_env()?;
 
     // Print scrappey API balance
     info!("Checking Scrappey API balance...");
-    let scrappey_client = ScrappeyClient::new(config.scrappey_api_key.clone());
+    let scrappey_client = ScrappeyClient::new(config.scrappey.api_key.clone());
     match scrappey_client.get_balance(30).await {
         Ok(balance) => info!("Scrappey API balance: {}", balance.balance),
         Err(e) => error!("Failed to get Scrappey API balance: {e}"),
@@ -42,54 +44,22 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Load configuration from environment variables
-/// Load configuration from environment variables.
-/// Returns a FlareSolverrConfig struct or an error if required variables are missing.
-fn load_config() -> Result<FlareSolverrConfig> {
-    let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")?;
-    let proxy_host = std::env::var("PROXY_HOST")?;
-    let proxy_port = std::env::var("PROXY_PORT")?
-        .parse::<u16>()
-        .map_err(|_| anyhow::anyhow!("Invalid PROXY_PORT"))?;
-    let proxy_username = std::env::var("PROXY_USERNAME").ok();
-    let proxy_password = std::env::var("PROXY_PASSWORD").ok();
-    let data_path =
-        std::env::var("DATA_PATH").unwrap_or_else(|_| "/data/persistent.json".to_string());
-    let capture_failure_screenshots = std::env::var("CAPTURE_FAILURE_SCREENSHOTS")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
-    let screenshot_dir =
-        std::env::var("SCREENSHOT_DIR").unwrap_or_else(|_| "/data/screenshots".to_string());
-
-    Ok(FlareSolverrConfig {
-        proxy_host,
-        proxy_port,
-        proxy_username,
-        proxy_password,
-        scrappey_api_key,
-        data_path,
-        capture_failure_screenshots,
-        screenshot_dir,
-    })
-}
-
 /// Start the proxy bridge in a background task
 /// Start the HTTP-to-HTTP proxy bridge in a background task.
 /// This bridge allows the browser to use a local proxy that forwards to an upstream proxy (with optional auth).
-async fn start_proxy_bridge(config: &FlareSolverrConfig) -> Result<()> {
-    use crate::fwd_proxy::{HttpProxyBridge, ProxyConfig};
+async fn start_proxy_bridge(config: &ServerConfig) -> Result<()> {
+    use crate::fwd_proxy::{FwdProxyConfig, HttpProxyBridge};
 
-    // Build proxy config with or without authentication
-    let proxy_config = if config.proxy_username.is_some() && config.proxy_password.is_some() {
-        ProxyConfig::with_auth(
-            config.proxy_host.clone(),
-            config.proxy_port,
-            config.proxy_username.as_ref().unwrap().clone(),
-            config.proxy_password.as_ref().unwrap().clone(),
+    // Convert our config to the fwd_proxy module's config
+    let proxy_config = if config.proxy.username.is_some() && config.proxy.password.is_some() {
+        FwdProxyConfig::with_auth(
+            config.proxy.host.clone(),
+            config.proxy.port,
+            config.proxy.username.as_ref().unwrap().clone(),
+            config.proxy.password.as_ref().unwrap().clone(),
         )
     } else {
-        ProxyConfig::new(config.proxy_host.clone(), config.proxy_port)
+        FwdProxyConfig::new(config.proxy.host.clone(), config.proxy.port)
     };
 
     // Bind and spawn the proxy bridge server
@@ -142,20 +112,10 @@ async fn shutdown_signal() {
 /// Run the Axum server with graceful shutdown and chromedriver cleanup
 /// Run the Axum API server with graceful shutdown and chromedriver cleanup.
 /// Binds to the configured address, serves requests, and handles SIGINT/SIGTERM for shutdown.
-async fn run_server(
-    config: FlareSolverrConfig,
-    chromedriver: &mut std::process::Child,
-) -> Result<()> {
+async fn run_server(config: ServerConfig, chromedriver: &mut std::process::Child) -> Result<()> {
     use tokio::net::TcpListener;
 
-    // Get host and port from environment or use defaults
-    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = std::env::var("PORT")
-        .unwrap_or_else(|_| "8191".to_string())
-        .parse::<u16>()
-        .unwrap_or(8191);
-
-    let addr = format!("{host}:{port}");
+    let addr = config.bind_address();
     info!("FlareSolverr starting on {addr}");
 
     // Create FlareSolverr API instance and router

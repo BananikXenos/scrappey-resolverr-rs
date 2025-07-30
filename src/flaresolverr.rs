@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thirtyfour::Cookie;
 
-use crate::browser::{Browser, BrowserConfig};
+use crate::browser::Browser;
+use crate::config::ServerConfig;
 
 /// This module implements the FlareSolverr-compatible API server.
 /// It provides endpoints for challenge-solving automation, health checks, and session management.
@@ -144,27 +145,14 @@ pub struct ErrorResponse {
     pub status_code: u16,
 }
 
-/// Configuration for the FlareSolverr API server and browser automation.
-#[derive(Debug, Clone)]
-pub struct FlareSolverrConfig {
-    pub proxy_host: String,
-    pub proxy_port: u16,
-    pub proxy_username: Option<String>,
-    pub proxy_password: Option<String>,
-    pub scrappey_api_key: String,
-    pub data_path: String,
-    pub capture_failure_screenshots: bool,
-    pub screenshot_dir: String,
-}
-
 /// Main API struct for FlareSolverr-compatible server.
 pub struct FlareSolverrAPI {
-    config: FlareSolverrConfig,
+    config: ServerConfig,
 }
 
 impl FlareSolverrAPI {
     /// Create a new API instance with the given config.
-    pub fn new(config: FlareSolverrConfig) -> Self {
+    pub fn new(config: ServerConfig) -> Self {
         Self { config }
     }
 
@@ -207,7 +195,7 @@ async fn health() -> ResponseJson<HealthResponse> {
 /// Handles all challenge-solving and session commands.
 async fn v1_handler(
     Json(request): Json<V1Request>,
-    config: FlareSolverrConfig,
+    config: ServerConfig,
 ) -> Result<ResponseJson<V1Response>, (StatusCode, ResponseJson<ErrorResponse>)> {
     let start_timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -254,10 +242,7 @@ async fn v1_handler(
 }
 
 /// Dispatches the v1 API command to the appropriate handler.
-async fn handle_v1_request(
-    req: V1Request,
-    config: FlareSolverrConfig,
-) -> Result<V1Response, String> {
+async fn handle_v1_request(req: V1Request, config: ServerConfig) -> Result<V1Response, String> {
     // Validate required fields
     if req.cmd.is_empty() {
         return Err("Request parameter 'cmd' is mandatory.".to_string());
@@ -291,7 +276,7 @@ async fn handle_v1_request(
 async fn handle_request_get(
     req: V1Request,
     max_timeout: u32,
-    config: FlareSolverrConfig,
+    config: ServerConfig,
 ) -> Result<V1Response, String> {
     // Validate GET request
     if req.url.is_none() {
@@ -310,17 +295,9 @@ async fn handle_request_get(
     let url = req.url.unwrap();
 
     // Create browser instance with config
-    let mut browser = Browser::new().with_config(BrowserConfig {
-        window_size: (1280, 720),
-        proxy_host: config.proxy_host,
-        proxy_port: config.proxy_port,
-        proxy_username: config.proxy_username.clone(),
-        proxy_password: config.proxy_password.clone(),
-        scrappey_api_key: config.scrappey_api_key,
-        capture_failure_screenshots: config.capture_failure_screenshots,
-        screenshot_dir: config.screenshot_dir,
-        ..Default::default()
-    });
+    let mut browser_config = config.to_browser_config();
+    browser_config.webdriver.window_size = (1280, 720);
+    let mut browser = Browser::new().with_config(browser_config);
 
     // Try to load browser data if available (for session persistence)
     if let Err(e) = browser.load_data(&config.data_path) {
@@ -379,7 +356,7 @@ async fn handle_request_get(
 async fn handle_request_post(
     req: V1Request,
     _max_timeout: u32,
-    _config: FlareSolverrConfig,
+    _config: ServerConfig,
 ) -> Result<V1Response, String> {
     // Validate POST request
     if req.post_data.is_none() {

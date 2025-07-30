@@ -18,11 +18,16 @@ services:
     depends_on:
       - proxy
     environment:
-      - SCRAPPEY_API_KEY=apikey
-      - PROXY_HOST=proxy-public # Replace with your proxy host
-      - PROXY_PORT=8081 # Replace with your proxy port
-      - PROXY_USERNAME=username
-      - PROXY_PASSWORD=password
+      - SCRAPPEY_API_KEY=apikey # Your Scrappey API key (Required)
+      - HOST=0.0.0.0 # Listen on all interfaces (Optional)
+      - PORT=8191 # Flaresolverr port (Optional)
+      - DATA_PATH=/data/persistent.json # Path to store cookies and other data (Optional)
+      - CAPTURE_FAILURE_SCREENSHOTS=true # Capture screenshots on failure (Optional)
+      - SCREENSHOT_DIR=/data/screenshots # Directory to store screenshots (Optional)
+      - PROXY_HOST=proxy-public # Publically accessible proxy hostname (Required)
+      - PROXY_PORT=8081 # Port of the proxy (Required)
+      - PROXY_USERNAME=username # Proxy authentication username (Optional)
+      - PROXY_PASSWORD=password # Proxy authentication password (Optional)
     volumes:
       - ./data:/data # For cookies and other data
     ports:
