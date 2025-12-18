@@ -6,6 +6,9 @@ use chrono::{DateTime, Utc};
 use log::{debug, warn};
 
 use crate::logging::LogContext;
+
+/// Default session ID used when no session is specified in requests
+const DEFAULT_SESSION_ID: &str = "default";
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,16 +36,27 @@ pub struct Session {
 
 impl Session {
     /// Create a new session with the given browser configuration.
+    /// If id is Some, use that ID; otherwise generate a new UUID.
     pub fn new(config: BrowserConfig, data_dir: &Path, ttl_minutes: Option<u32>) -> Result<Self> {
-        let id = Uuid::new_v4().to_string();
+        Self::with_id(config, data_dir, ttl_minutes, None)
+    }
+
+    /// Create a new session with a specific ID.
+    pub fn with_id(
+        config: BrowserConfig,
+        data_dir: &Path,
+        ttl_minutes: Option<u32>,
+        id: Option<String>,
+    ) -> Result<Self> {
+        let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let now = Utc::now();
         let data_path = data_dir.join(format!("session_{}.json", id));
 
-        // Try to load existing data if file exists (shouldn't for new sessions, but handle gracefully)
+        // Try to load existing data if file exists
         let mut browser = Browser::new().with_config(config);
         if data_path.exists() {
             if let Err(e) = browser.load_data(data_path.to_str().unwrap()) {
-                debug!("Could not load session data for new session: {e}");
+                debug!("Could not load session data for session {}: {e}", id);
             }
         }
 
@@ -169,9 +183,18 @@ impl SessionManager {
     }
 
     /// Create a new session and return its ID.
+    /// Note: This will not create a session with ID "default" - use get_or_create_default_session() for that.
     pub async fn create_session(&self, ttl_minutes: Option<u32>) -> Result<String> {
         let session = Session::new(self.base_config.clone(), &self.data_dir, ttl_minutes)?;
         let id = session.id.clone();
+
+        // Prevent creating a session with the default ID
+        if id == DEFAULT_SESSION_ID {
+            return Err(anyhow::anyhow!(
+                "Cannot create session with reserved ID '{}'. Use get_or_create_default_session() instead.",
+                DEFAULT_SESSION_ID
+            ));
+        }
 
         let mut sessions = self.sessions.write().await;
         sessions.insert(id.clone(), session);
@@ -207,6 +230,36 @@ impl SessionManager {
         sessions.contains_key(id)
     }
 
+    /// Get or create the default session.
+    /// This session is used when no session ID is specified in requests.
+    pub async fn get_or_create_default_session(&self) -> Result<String> {
+        let sessions = self.sessions.read().await;
+        if sessions.contains_key(DEFAULT_SESSION_ID) {
+            drop(sessions);
+            Ok(DEFAULT_SESSION_ID.to_string())
+        } else {
+            drop(sessions);
+            // Create default session with no TTL (persistent) using the default ID
+            let session = Session::with_id(
+                self.base_config.clone(),
+                &self.data_dir,
+                None,
+                Some(DEFAULT_SESSION_ID.to_string()),
+            )?;
+            let mut sessions = self.sessions.write().await;
+            sessions.insert(DEFAULT_SESSION_ID.to_string(), session);
+
+            let ctx = LogContext::new().with_session(DEFAULT_SESSION_ID);
+            ctx.info("Created default session (no TTL, persistent)");
+            Ok(DEFAULT_SESSION_ID.to_string())
+        }
+    }
+
+    /// Get the default session ID.
+    pub fn default_session_id() -> &'static str {
+        DEFAULT_SESSION_ID
+    }
+
     /// List all active session IDs.
     pub async fn list_sessions(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
@@ -214,7 +267,14 @@ impl SessionManager {
     }
 
     /// Destroy a session by ID.
+    /// Note: The default session cannot be destroyed - it will be recreated on next use.
     pub async fn destroy_session(&self, id: &str) -> Result<()> {
+        if id == DEFAULT_SESSION_ID {
+            return Err(anyhow::anyhow!(
+                "Cannot destroy the default session. It will be recreated automatically when needed."
+            ));
+        }
+
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.remove(id) {
             let ctx = LogContext::new().with_session(id);
@@ -254,6 +314,7 @@ impl SessionManager {
     }
 
     /// Clean up expired sessions (called by background task).
+    /// The default session is never cleaned up.
     async fn cleanup_expired_sessions(
         sessions: &Arc<RwLock<HashMap<String, Session>>>,
         _data_dir: &Path,
@@ -261,7 +322,10 @@ impl SessionManager {
         let mut sessions_write = sessions.write().await;
         let expired_ids: Vec<String> = sessions_write
             .iter()
-            .filter(|(_, session)| session.is_expired())
+            .filter(|(id, session)| {
+                // Never expire the default session
+                *id != DEFAULT_SESSION_ID && session.is_expired()
+            })
             .map(|(id, _)| id.clone())
             .collect();
 

@@ -339,15 +339,15 @@ async fn handle_request_get(
 
     let url = req.url.unwrap();
 
-    // Use session if provided, otherwise create a temporary one
+    // Use session if provided, otherwise use the default session
     let session_id = if let Some(ref session_id) = req.session {
         session_id.clone()
     } else {
-        // Create a temporary session for this request
+        // Use the default session (created if it doesn't exist)
         session_manager
-            .create_session(req.session_ttl_minutes)
+            .get_or_create_default_session()
             .await
-            .map_err(|e| format!("Failed to create session: {e}"))?
+            .map_err(|e| format!("Failed to get or create default session: {e}"))?
     };
 
     let ctx = LogContext::new().with_session(&session_id).with_url(&url);
