@@ -157,10 +157,7 @@ impl FlareSolverrAPI {
     /// Create a new API instance with the given config.
     pub fn new(config: ServerConfig) -> Self {
         let browser_config = config.to_browser_config();
-        let data_dir = std::path::Path::new(&config.data_path)
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("/data"))
-            .join("sessions");
+        let data_dir = std::path::Path::new(&config.data_path).join("sessions");
 
         let session_manager = SessionManager::new(browser_config, data_dir);
 

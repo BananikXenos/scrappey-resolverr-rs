@@ -27,7 +27,7 @@ A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-b
    - Chrome is configured to use this bridge, enabling authenticated proxy support.
 
 4. **Persistence:**
-   - Cookies and user-agent are persisted to disk (`/data/persistent.json`) for session continuity.
+   - Session data (cookies and user-agent) are persisted to disk in the data directory (default: `/data/sessions/`) for session continuity.
    - Failure screenshots are automatically captured when challenges fail (saved to `/data/screenshots/`).
 
 ---
@@ -184,7 +184,7 @@ curl -X POST http://localhost:8191/v1 \
 - `PROXY_PORT` - HTTP proxy port (required)
 - `PROXY_USERNAME` - HTTP proxy username (optional)
 - `PROXY_PASSWORD` - HTTP proxy password (optional)
-- `DATA_PATH` - Path to persistent data file (default: `/data/persistent.json`)
+- `DATA_PATH` - Directory path for storing session data (default: `/data`). Sessions are stored in a `sessions` subdirectory.
 - `CAPTURE_FAILURE_SCREENSHOTS` - Enable/disable failure screenshots (default: `true`)
 - `SCREENSHOT_DIR` - Directory for failure screenshots (default: `/data/screenshots`)
 - `MAX_FAILURE_SCREENSHOTS` - Maximum number of failure screenshots to keep (default: `10`)
@@ -204,7 +204,7 @@ Example screenshot filename: `failure_example.com_20240315_143022.png`
 
 ## Notes
 
-- **Persistence:** Cookies and user-agent are saved in `/data/persistent.json` (mounted as a Docker volume).
+- **Persistence:** Session data (cookies and user-agent) are saved in `/data/sessions/` (mounted as a Docker volume). Each session has its own file.
 - **Proxy:** Chrome always connects to the local proxy bridge (`127.0.0.1:8080`), which forwards to your configured authenticated proxy.
 - **Fallback:** If browser-based solving fails, Scrappey API is used (requires a valid API key and balance).
 - **Screenshots:** Failure screenshots are automatically captured for debugging when challenges cannot be solved.

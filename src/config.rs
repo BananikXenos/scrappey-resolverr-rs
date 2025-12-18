@@ -213,7 +213,7 @@ impl Default for ServerConfig {
             proxy: ProxyConfig::default(),
             scrappey: ScrappeyConfig::default(),
             screenshots: ScreenshotConfig::default(),
-            data_path: "/data/persistent.json".to_string(),
+            data_path: "/data".to_string(),
             host: "0.0.0.0".to_string(),
             port: 8191,
         }
@@ -229,8 +229,7 @@ pub fn load_from_env() -> Result<ServerConfig> {
         .map_err(|_| anyhow::anyhow!("Invalid PROXY_PORT"))?;
     let proxy_username = std::env::var("PROXY_USERNAME").ok();
     let proxy_password = std::env::var("PROXY_PASSWORD").ok();
-    let data_path =
-        std::env::var("DATA_PATH").unwrap_or_else(|_| "/data/persistent.json".to_string());
+    let data_path = std::env::var("DATA_PATH").unwrap_or_else(|_| "/data".to_string());
     let capture_failure_screenshots = std::env::var("CAPTURE_FAILURE_SCREENSHOTS")
         .unwrap_or_else(|_| "true".to_string())
         .parse::<bool>()
