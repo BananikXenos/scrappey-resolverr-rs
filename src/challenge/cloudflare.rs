@@ -1,11 +1,18 @@
 //! Cloudflare challenge detection, handling, and fallback logic.
 
 use anyhow::Result;
-use thirtyfour::prelude::*;
+use log::{debug, info, warn};
+use thirtyfour::{Cookie, prelude::*};
 
-use crate::scrappey::{ScrappeyClient, ScrappeyGetRequest, ScrappeyResponse};
+use crate::browser::Response;
+use crate::config::{ProxyConfig, ScrappeyConfig};
+use crate::logging::{LogContext, TimingLogger};
+use crate::scrappey::{ScrappeyClient, ScrappeyGetRequest};
 
 use super::{ChallengeHandler, title_contains};
+
+/// Fraction of timeout allocated to initial Cloudflare challenge attempt
+const CLOUDFLARE_TIMEOUT_FRACTION: u64 = 3;
 
 /// Cloudflare challenge handler implementation.
 pub struct CloudflareHandler;
@@ -14,6 +21,114 @@ impl CloudflareHandler {
     /// Create a new Cloudflare challenge handler.
     pub fn new() -> Self {
         Self
+    }
+
+    /// Handle Cloudflare challenge with optional Scrappey fallback.
+    pub async fn handle_with_fallback(
+        &self,
+        driver: &mut WebDriver,
+        timeout: u64,
+        scrappey_config: Option<&ScrappeyConfig>,
+        proxy_config: Option<&ProxyConfig>,
+        url: &str,
+        browser_cookies: &mut Vec<Cookie>,
+        browser_user_agent: &mut String,
+    ) -> Result<Option<Response>> {
+        let cloudflare_timeout = timeout / CLOUDFLARE_TIMEOUT_FRACTION;
+        let scrappey_timeout = timeout - cloudflare_timeout;
+
+        // Try browser-based challenge handling first
+        let start_time = std::time::Instant::now();
+        while self.is_protected(driver).await {
+            if start_time.elapsed().as_secs() > cloudflare_timeout {
+                // Browser handling timed out, try Scrappey fallback if configured
+                if let (Some(scrappey), Some(proxy)) = (scrappey_config, proxy_config) {
+                    warn!("Cloudflare challenge timed out, falling back to Scrappey");
+                    return Self::fallback_to_scrappey(
+                        scrappey,
+                        proxy,
+                        url,
+                        browser_cookies,
+                        browser_user_agent,
+                        scrappey_timeout,
+                    )
+                    .await
+                    .map(Some);
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Cloudflare challenge timed out after {} seconds",
+                        cloudflare_timeout
+                    ));
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+
+        info!("Cloudflare challenge handled successfully");
+        Ok(None)
+    }
+
+    /// Use Scrappey API as a fallback to solve Cloudflare challenges.
+    async fn fallback_to_scrappey(
+        scrappey_config: &ScrappeyConfig,
+        proxy_config: &ProxyConfig,
+        url: &str,
+        browser_cookies: &mut Vec<Cookie>,
+        browser_user_agent: &mut String,
+        timeout: u64,
+    ) -> Result<Response> {
+        if !scrappey_config.is_configured() {
+            return Err(anyhow::anyhow!("Scrappey API key not configured"));
+        }
+
+        let ctx = LogContext::new().with_url(url);
+        let proxy = proxy_config.to_url();
+
+        ctx.info(&format!(
+            "Attempting to resolve challenge with Scrappey API (timeout: {}s, estimated: 20-40s)",
+            timeout
+        ));
+
+        let scrappey_timing = TimingLogger::new("scrappey_resolve").with_url(url);
+        let client = ScrappeyClient::new(scrappey_config.api_key.clone());
+        let request = ScrappeyGetRequest {
+            url: url.to_string(),
+            proxy: Some(proxy),
+            ..Default::default()
+        };
+        let response = client.get(request, timeout).await?;
+        let duration = scrappey_timing.finish_silent();
+
+        ctx.info(&format!(
+            "Scrappey resolved challenge successfully in {:.2}s",
+            duration.as_secs_f64()
+        ));
+        debug!(
+            "Scrappey response: status={:?}, cookies={:?}",
+            response.solution.status_code,
+            response.solution.cookies.as_ref().map(|c| c.len())
+        );
+
+        // Update browser cookies and user agent
+        if let Some(cookies) = response.solution.cookies {
+            for cookie in cookies {
+                browser_cookies.push(Cookie::from(cookie));
+            }
+        }
+        if let Some(ua) = response.solution.user_agent {
+            *browser_user_agent = ua;
+        }
+
+        Ok(Response {
+            url: response
+                .solution
+                .current_url
+                .unwrap_or_else(|| url.to_string()),
+            status: response.solution.status_code.unwrap_or(200),
+            body: response.solution.response.unwrap_or_default(),
+            cookies: browser_cookies.clone(),
+            user_agent: browser_user_agent.clone(),
+        })
     }
 }
 
@@ -32,27 +147,4 @@ impl ChallengeHandler for CloudflareHandler {
     async fn is_protected(&self, driver: &mut WebDriver) -> bool {
         title_contains(driver, "Just a moment...").await
     }
-}
-
-/// Fallback: Use Scrappey API to resolve Cloudflare challenge if browser automation fails.
-/// This is a standalone function that can be called when the browser-based challenge handling times out.
-///
-/// # Arguments
-/// * `url` - The URL to resolve
-/// * `api_key` - Scrappey API key
-/// * `proxy` - Proxy string (e.g., "http://user:pass@host:port")
-/// * `timeout` - Request timeout in seconds
-pub async fn scrappey_resolve(
-    url: String,
-    api_key: String,
-    proxy: &str,
-    timeout: u64,
-) -> Result<ScrappeyResponse> {
-    let client = ScrappeyClient::new(api_key);
-    let request = ScrappeyGetRequest {
-        url,
-        proxy: Some(proxy.to_string()),
-        ..Default::default()
-    };
-    client.get(request, timeout).await
 }

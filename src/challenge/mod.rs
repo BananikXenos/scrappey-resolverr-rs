@@ -21,13 +21,20 @@ pub trait ChallengeHandler {
     /// Returns `true` if the challenge is detected, `false` otherwise.
     async fn is_protected(&self, driver: &mut WebDriver) -> bool;
 
-    /// Attempts to handle the challenge by waiting for it to be solved.
-    /// Returns `Ok(())` if the challenge was successfully handled, or an error if it timed out.
+    /// Attempts to handle the challenge.
+    /// Returns `Ok(None)` if the challenge was successfully handled in the browser,
+    /// `Ok(Some(response))` if a fallback method was used and returned a response,
+    /// or an error if handling failed.
     ///
     /// # Arguments
     /// * `driver` - The WebDriver instance to interact with
     /// * `timeout` - Maximum time to wait for the challenge to be solved (in seconds)
-    async fn handle_challenge(&self, driver: &mut WebDriver, timeout: u64) -> Result<()> {
+    async fn handle_challenge(
+        &self,
+        driver: &mut WebDriver,
+        timeout: u64,
+    ) -> Result<Option<crate::browser::Response>> {
+        // Default implementation: just poll until challenge is resolved
         let start_time = std::time::Instant::now();
         while self.is_protected(driver).await {
             if start_time.elapsed().as_secs() > timeout {
@@ -39,7 +46,7 @@ pub trait ChallengeHandler {
             }
             tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
-        Ok(())
+        Ok(None)
     }
 }
 
