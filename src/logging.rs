@@ -1,10 +1,10 @@
-//! Structured logging utilities for better observability.
+//! Simple logging utilities.
 
 use log::{debug, error, info, warn};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// Logging context for tracking operations with metadata.
-#[derive(Clone, Debug)]
+/// Logging context with optional metadata.
+#[derive(Clone, Debug, Default)]
 pub struct LogContext {
     pub session_id: Option<String>,
     pub url: Option<String>,
@@ -12,35 +12,26 @@ pub struct LogContext {
 }
 
 impl LogContext {
-    /// Create a new logging context.
     pub fn new() -> Self {
-        Self {
-            session_id: None,
-            url: None,
-            operation: None,
-        }
+        Self::default()
     }
 
-    /// Add session ID to context.
     pub fn with_session(mut self, session_id: &str) -> Self {
         self.session_id = Some(session_id.to_string());
         self
     }
 
-    /// Add URL to context.
     pub fn with_url(mut self, url: &str) -> Self {
         self.url = Some(url.to_string());
         self
     }
 
-    /// Add operation name to context.
     pub fn with_operation(mut self, operation: &str) -> Self {
         self.operation = Some(operation.to_string());
         self
     }
 
-    /// Format context for log messages.
-    fn format(&self) -> String {
+    fn prefix(&self) -> String {
         let mut parts = Vec::new();
         if let Some(ref op) = self.operation {
             parts.push(format!("op={}", op));
@@ -49,13 +40,8 @@ impl LogContext {
             parts.push(format!("session={}", sid));
         }
         if let Some(ref url) = self.url {
-            // Truncate long URLs for readability
-            let display_url = if url.len() > 80 {
-                format!("{}...", &url[..77])
-            } else {
-                url.clone()
-            };
-            parts.push(format!("url={}", display_url));
+            let display = if url.len() > 60 { &url[..57] } else { url };
+            parts.push(format!("url={}", display));
         }
         if parts.is_empty() {
             String::new()
@@ -64,41 +50,30 @@ impl LogContext {
         }
     }
 
-    /// Log an info message with context.
-    pub fn info(&self, message: &str) {
-        info!("{}{}", self.format(), message);
+    pub fn info(&self, msg: &str) {
+        info!("{}{}", self.prefix(), msg);
     }
 
-    /// Log a debug message with context.
-    pub fn debug(&self, message: &str) {
-        debug!("{}{}", self.format(), message);
+    pub fn debug(&self, msg: &str) {
+        debug!("{}{}", self.prefix(), msg);
     }
 
-    /// Log a warning message with context.
-    pub fn warn(&self, message: &str) {
-        warn!("{}{}", self.format(), message);
+    pub fn warn(&self, msg: &str) {
+        warn!("{}{}", self.prefix(), msg);
     }
 
-    /// Log an error message with context.
-    pub fn error(&self, message: &str) {
-        error!("{}{}", self.format(), message);
+    pub fn error(&self, msg: &str) {
+        error!("{}{}", self.prefix(), msg);
     }
 }
 
-impl Default for LogContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Timing logger for tracking operation duration.
+/// Simple timing logger.
 pub struct TimingLogger {
     context: LogContext,
     start: Instant,
 }
 
 impl TimingLogger {
-    /// Create a new timing logger.
     pub fn new(operation: &str) -> Self {
         Self {
             context: LogContext::new().with_operation(operation),
@@ -106,56 +81,36 @@ impl TimingLogger {
         }
     }
 
-    /// Add session ID to timing context.
+    #[allow(dead_code)]
     pub fn with_session(mut self, session_id: &str) -> Self {
         self.context = self.context.with_session(session_id);
         self
     }
 
-    /// Add URL to timing context.
+    #[allow(dead_code)]
     pub fn with_url(mut self, url: &str) -> Self {
         self.context = self.context.with_url(url);
         self
     }
 
-    /// Add operation name to timing context.
-    pub fn with_operation(mut self, operation: &str) -> Self {
-        self.context = self.context.with_operation(operation);
-        self
+    pub fn finish(self) {
+        let secs = self.start.elapsed().as_secs_f64();
+        self.context.info(&format!("Completed in {:.2}s", secs));
     }
 
-    /// Finish timing and log the duration.
-    pub fn finish(self) -> Duration {
-        let duration = self.start.elapsed();
-        self.context
-            .info(&format!("Completed in {:.2}s", duration.as_secs_f64()));
-        duration
-    }
-
-    /// Finish timing and return duration without logging.
-    pub fn finish_silent(self) -> Duration {
+    pub fn finish_silent(self) -> std::time::Duration {
         self.start.elapsed()
     }
 }
 
-/// Log an error with full context and chain.
-pub fn log_error_with_context(context: &LogContext, error: &anyhow::Error) {
-    let mut message = format!("Error: {}", error);
-    let mut source = error.source();
-    let mut depth = 0;
+/// Log an error with its cause chain.
+pub fn log_error_with_context(ctx: &LogContext, error: &anyhow::Error) {
+    let mut msg = format!("Error: {}", error);
+    let err_ref: &(dyn std::error::Error + 'static) = error.as_ref();
+    let mut source = err_ref.source();
     while let Some(err) = source {
-        depth += 1;
-        message.push_str(&format!(" (caused by: {})", err));
+        msg.push_str(&format!(" -> {}", err));
         source = err.source();
-        if depth > 5 {
-            // Prevent infinite chains
-            break;
-        }
     }
-    context.error(&message);
-}
-
-/// Log an error with a simple message.
-pub fn log_error_simple(context: &LogContext, message: &str, error: &dyn std::error::Error) {
-    context.error(&format!("{}: {}", message, error));
+    ctx.error(&msg);
 }

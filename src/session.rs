@@ -1,66 +1,52 @@
 //! Session management for concurrent browser instances.
-//! Provides thread-safe session storage and lifecycle management.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use log::{debug, warn};
-
-use crate::logging::LogContext;
-
-/// Default session ID used when no session is specified in requests
-const DEFAULT_SESSION_ID: &str = "default";
+use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::browser::{Browser, BrowserData};
+use crate::browser::Browser;
 use crate::config::BrowserConfig;
 
-/// Represents a browser session with metadata.
+/// Default session ID used when no session is specified
+pub const DEFAULT_SESSION_ID: &str = "default";
+
+/// Browser session with metadata.
 pub struct Session {
-    /// Unique session identifier
     pub id: String,
-    /// Browser instance for this session
     pub browser: Browser,
-    /// When the session was created
     pub created_at: DateTime<Utc>,
-    /// Last time the session was used
     pub last_used: DateTime<Utc>,
-    /// Time-to-live in minutes (None = no expiration)
     pub ttl_minutes: Option<u32>,
-    /// Path to session data file
-    pub data_path: PathBuf,
+    data_path: PathBuf,
 }
 
 impl Session {
-    /// Create a new session with the given browser configuration.
-    /// If id is Some, use that ID; otherwise generate a new UUID.
-    pub fn new(config: BrowserConfig, data_dir: &Path, ttl_minutes: Option<u32>) -> Result<Self> {
-        Self::with_id(config, data_dir, ttl_minutes, None)
-    }
-
-    /// Create a new session with a specific ID.
-    pub fn with_id(
+    /// Create a new session, optionally with a specific ID.
+    pub fn new(
         config: BrowserConfig,
         data_dir: &Path,
         ttl_minutes: Option<u32>,
-        id: Option<String>,
+        id: Option<&str>,
     ) -> Result<Self> {
-        let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = Utc::now();
+        let id = id
+            .map(String::from)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let data_path = data_dir.join(format!("session_{}.json", id));
+        let now = Utc::now();
 
-        // Try to load existing data if file exists
         let mut browser = Browser::new().with_config(config);
         if data_path.exists() {
             if let Err(e) = browser.load_data(data_path.to_str().unwrap()) {
-                debug!("Could not load session data for session {}: {e}", id);
+                debug!("Could not load session data for {}: {e}", id);
             }
         }
 
-        Ok(Session {
+        Ok(Self {
             id,
             browser,
             created_at: now,
@@ -70,47 +56,20 @@ impl Session {
         })
     }
 
-    /// Create a session from existing data (for loading persisted sessions).
-    pub fn from_data(
-        id: String,
-        data: BrowserData,
-        config: BrowserConfig,
-        data_dir: &Path,
-        created_at: DateTime<Utc>,
-        ttl_minutes: Option<u32>,
-    ) -> Self {
-        let data_path = data_dir.join(format!("session_{}.json", id));
-        let mut browser = Browser::new().with_config(config);
-        browser.data = data;
-
-        Session {
-            id,
-            browser,
-            created_at,
-            last_used: Utc::now(),
-            ttl_minutes,
-            data_path,
-        }
-    }
-
-    /// Update the last used timestamp.
+    /// Update last used timestamp.
     pub fn touch(&mut self) {
         self.last_used = Utc::now();
     }
 
-    /// Check if the session has expired based on TTL.
+    /// Check if session has expired.
     pub fn is_expired(&self) -> bool {
-        if let Some(ttl) = self.ttl_minutes {
-            let expiry = self.created_at + chrono::Duration::minutes(ttl as i64);
-            Utc::now() > expiry
-        } else {
-            false
-        }
+        self.ttl_minutes.map_or(false, |ttl| {
+            Utc::now() > self.created_at + chrono::Duration::minutes(ttl as i64)
+        })
     }
 
     /// Save session data to disk.
     pub fn save(&self) -> Result<()> {
-        // Ensure data directory exists
         if let Some(parent) = self.data_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -127,25 +86,19 @@ impl Session {
     }
 }
 
-/// Thread-safe session manager for handling multiple concurrent browser sessions.
+/// Thread-safe session manager.
 pub struct SessionManager {
-    /// Map of session ID to Session
     sessions: Arc<RwLock<HashMap<String, Session>>>,
-    /// Base configuration for new sessions
-    base_config: BrowserConfig,
-    /// Directory for storing session data
+    config: BrowserConfig,
     data_dir: PathBuf,
-    /// Background task handle for cleanup
     _cleanup_handle: Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl Clone for SessionManager {
     fn clone(&self) -> Self {
-        // Clone creates a new manager sharing the same session storage
-        // This allows multiple API instances to share the same session pool
         Self {
             sessions: Arc::clone(&self.sessions),
-            base_config: self.base_config.clone(),
+            config: self.config.clone(),
             data_dir: self.data_dir.clone(),
             _cleanup_handle: Arc::clone(&self._cleanup_handle),
         }
@@ -153,195 +106,125 @@ impl Clone for SessionManager {
 }
 
 impl SessionManager {
-    /// Create a new session manager with the given configuration.
+    /// Create a new session manager with preloaded default session.
     pub fn new(config: BrowserConfig, data_dir: impl AsRef<Path>) -> Self {
         let data_dir = data_dir.as_ref().to_path_buf();
-        let sessions = Arc::new(RwLock::new(HashMap::new()));
+        std::fs::create_dir_all(&data_dir).ok();
 
-        // Ensure data directory exists
-        if let Err(e) = std::fs::create_dir_all(&data_dir) {
-            warn!("Failed to create session data directory: {e}");
-        }
+        // Preload default session
+        let default_session =
+            Session::new(config.clone(), &data_dir, None, Some(DEFAULT_SESSION_ID))
+                .expect("Failed to create default session");
 
-        // Spawn background cleanup task
+        let mut sessions = HashMap::new();
+        sessions.insert(DEFAULT_SESSION_ID.to_string(), default_session);
+        let sessions = Arc::new(RwLock::new(sessions));
+
+        info!("[session={}] Default session preloaded", DEFAULT_SESSION_ID);
+
+        // Background cleanup task
         let sessions_clone = Arc::clone(&sessions);
-        let data_dir_clone = data_dir.clone();
         let cleanup_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                Self::cleanup_expired_sessions(&sessions_clone, &data_dir_clone).await;
+                cleanup_expired(&sessions_clone).await;
             }
         });
 
         Self {
             sessions,
-            base_config: config,
+            config,
             data_dir,
             _cleanup_handle: Arc::new(cleanup_handle),
         }
     }
 
-    /// Create a new session and return its ID.
-    /// Note: This will not create a session with ID "default" - use get_or_create_default_session() for that.
+    /// Get session ID to use (provided or default).
+    pub fn resolve_session_id(&self, session: Option<&str>) -> String {
+        session
+            .map(String::from)
+            .unwrap_or_else(|| DEFAULT_SESSION_ID.to_string())
+    }
+
+    /// Create a new session with a unique ID.
     pub async fn create_session(&self, ttl_minutes: Option<u32>) -> Result<String> {
-        let session = Session::new(self.base_config.clone(), &self.data_dir, ttl_minutes)?;
+        let session = Session::new(self.config.clone(), &self.data_dir, ttl_minutes, None)?;
         let id = session.id.clone();
 
-        // Prevent creating a session with the default ID
-        if id == DEFAULT_SESSION_ID {
-            return Err(anyhow::anyhow!(
-                "Cannot create session with reserved ID '{}'. Use get_or_create_default_session() instead.",
-                DEFAULT_SESSION_ID
-            ));
-        }
-
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(id.clone(), session);
-
-        let ctx = LogContext::new().with_session(&id);
-        ctx.info(&format!(
-            "Created new session (TTL: {})",
-            ttl_minutes
-                .map(|t| format!("{} minutes", t))
-                .unwrap_or_else(|| "unlimited".to_string())
-        ));
+        self.sessions.write().await.insert(id.clone(), session);
+        info!(
+            "[session={}] Created (TTL: {})",
+            id,
+            ttl_minutes.map_or("unlimited".into(), |t| format!("{}m", t))
+        );
         Ok(id)
     }
 
-    /// Execute a function with a mutable reference to a session.
-    /// This is the preferred way to access and modify sessions.
+    /// Execute a function with a mutable session reference.
     pub async fn with_session<F, R>(&self, id: &str, f: F) -> Option<R>
     where
         F: FnOnce(&mut Session) -> R,
     {
         let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(id) {
+        sessions.get_mut(id).map(|session| {
             session.touch();
-            Some(f(session))
-        } else {
-            None
-        }
-    }
-
-    /// Check if a session exists.
-    pub async fn has_session(&self, id: &str) -> bool {
-        let sessions = self.sessions.read().await;
-        sessions.contains_key(id)
-    }
-
-    /// Get or create the default session.
-    /// This session is used when no session ID is specified in requests.
-    pub async fn get_or_create_default_session(&self) -> Result<String> {
-        let sessions = self.sessions.read().await;
-        if sessions.contains_key(DEFAULT_SESSION_ID) {
-            drop(sessions);
-            Ok(DEFAULT_SESSION_ID.to_string())
-        } else {
-            drop(sessions);
-            // Create default session with no TTL (persistent) using the default ID
-            let session = Session::with_id(
-                self.base_config.clone(),
-                &self.data_dir,
-                None,
-                Some(DEFAULT_SESSION_ID.to_string()),
-            )?;
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(DEFAULT_SESSION_ID.to_string(), session);
-
-            let ctx = LogContext::new().with_session(DEFAULT_SESSION_ID);
-            ctx.info("Created default session (no TTL, persistent)");
-            Ok(DEFAULT_SESSION_ID.to_string())
-        }
-    }
-
-    /// Get the default session ID.
-    pub fn default_session_id() -> &'static str {
-        DEFAULT_SESSION_ID
+            f(session)
+        })
     }
 
     /// List all active session IDs.
     pub async fn list_sessions(&self) -> Vec<String> {
-        let sessions = self.sessions.read().await;
-        sessions.keys().cloned().collect()
+        self.sessions.read().await.keys().cloned().collect()
     }
 
     /// Destroy a session by ID.
-    /// Note: The default session cannot be destroyed - it will be recreated on next use.
     pub async fn destroy_session(&self, id: &str) -> Result<()> {
         if id == DEFAULT_SESSION_ID {
-            return Err(anyhow::anyhow!(
-                "Cannot destroy the default session. It will be recreated automatically when needed."
-            ));
+            anyhow::bail!("Cannot destroy the default session");
         }
 
         let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.remove(id) {
-            let ctx = LogContext::new().with_session(id);
-
-            // Try to save session data before removing
-            if let Err(e) = session.save() {
-                ctx.warn(&format!(
-                    "Failed to save session data before destruction: {}",
-                    e
-                ));
-            }
-
-            // Optionally delete the session data file
-            if session.data_path.exists() {
-                if let Err(e) = std::fs::remove_file(&session.data_path) {
-                    ctx.warn(&format!("Failed to delete session data file: {}", e));
+        match sessions.remove(id) {
+            Some(session) => {
+                session.save().ok();
+                if session.data_path.exists() {
+                    std::fs::remove_file(&session.data_path).ok();
                 }
+                info!("[session={}] Destroyed", id);
+                Ok(())
             }
-
-            ctx.info("Session destroyed successfully");
-            Ok(())
-        } else {
-            let ctx = LogContext::new().with_session(id);
-            ctx.warn("Attempted to destroy non-existent session");
-            Err(anyhow::anyhow!("Session not found: {}", id))
+            None => anyhow::bail!("Session not found: {}", id),
         }
     }
 
     /// Save all sessions to disk.
+    #[allow(dead_code)]
     pub async fn save_all(&self) {
-        let sessions = self.sessions.read().await;
-        for session in sessions.values() {
+        for session in self.sessions.read().await.values() {
             if let Err(e) = session.save() {
                 warn!("Failed to save session {}: {e}", session.id);
             }
         }
     }
+}
 
-    /// Clean up expired sessions (called by background task).
-    /// The default session is never cleaned up.
-    async fn cleanup_expired_sessions(
-        sessions: &Arc<RwLock<HashMap<String, Session>>>,
-        _data_dir: &Path,
-    ) {
-        let mut sessions_write = sessions.write().await;
-        let expired_ids: Vec<String> = sessions_write
-            .iter()
-            .filter(|(id, session)| {
-                // Never expire the default session
-                *id != DEFAULT_SESSION_ID && session.is_expired()
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
+/// Clean up expired sessions (excluding default).
+async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, Session>>>) {
+    let mut sessions = sessions.write().await;
+    let expired: Vec<_> = sessions
+        .iter()
+        .filter(|(id, s)| *id != DEFAULT_SESSION_ID && s.is_expired())
+        .map(|(id, _)| id.clone())
+        .collect();
 
-        for id in expired_ids {
-            if let Some(session) = sessions_write.remove(&id) {
-                let ctx = LogContext::new().with_session(&id);
-                ctx.debug("Cleaning up expired session (TTL expired)");
-                // Save before removing
-                if let Err(e) = session.save() {
-                    ctx.warn(&format!("Failed to save expired session data: {}", e));
-                }
-                // Optionally delete data file
-                if session.data_path.exists() {
-                    let _ = std::fs::remove_file(&session.data_path);
-                }
+    for id in expired {
+        if let Some(session) = sessions.remove(&id) {
+            session.save().ok();
+            if session.data_path.exists() {
+                std::fs::remove_file(&session.data_path).ok();
             }
+            debug!("[session={}] Expired and cleaned up", id);
         }
     }
 }
