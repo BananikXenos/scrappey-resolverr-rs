@@ -45,7 +45,10 @@ impl ScrappeyClient {
 
     /// Make a GET request via Scrappey, using the provided parameters and timeout.
     pub async fn get(&self, req: ScrappeyGetRequest, timeout: u64) -> Result<ScrappeyResponse> {
-        let mut payload = serde_json::to_value(&req)?.as_object().unwrap().clone();
+        let mut payload = serde_json::to_value(&req)?
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("Failed to convert request to JSON object"))?
+            .clone();
         payload.insert("cmd".to_string(), Value::String("request.get".to_string()));
         let resp = self
             .client
@@ -62,7 +65,10 @@ impl ScrappeyClient {
 
     /// Make a POST request via Scrappey, using the provided parameters and timeout.
     pub async fn post(&self, req: ScrappeyPostRequest, timeout: u64) -> Result<ScrappeyResponse> {
-        let mut payload = serde_json::to_value(&req)?.as_object().unwrap().clone();
+        let mut payload = serde_json::to_value(&req)?
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("Failed to convert request to JSON object"))?
+            .clone();
         payload.insert("cmd".to_string(), Value::String("request.post".to_string()));
         let resp = self
             .client
@@ -78,7 +84,6 @@ impl ScrappeyClient {
     }
 }
 
-/// Balance response from Scrappey API
 /// Balance response from Scrappey API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyBalance {
@@ -86,7 +91,6 @@ pub struct ScrappeyBalance {
     pub balance: f64,
 }
 
-/// Parameters for Scrappey GET requests
 /// Parameters for Scrappey GET requests.
 /// Most fields are optional and allow fine-tuning of the request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,7 +118,6 @@ pub struct ScrappeyGetRequest {
     pub local_storage: Option<HashMap<String, String>>,
 }
 
-/// Parameters for Scrappey POST requests
 /// Parameters for Scrappey POST requests.
 /// Accepts post_data as either string or object, plus all GET options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,7 +147,6 @@ pub struct ScrappeyPostRequest {
     pub local_storage: Option<HashMap<String, String>>,
 }
 
-/// Cookie object for cookiejar and response cookies
 /// Cookie object for Scrappey requests and responses.
 /// Used for cookiejar and response cookies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,7 +185,6 @@ impl From<ScrappeyCookie> for Cookie {
     }
 }
 
-/// Scrappey API response
 /// Scrappey API response for challenge-solving requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrappeyResponse {

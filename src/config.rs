@@ -247,10 +247,11 @@ pub fn load_from_env() -> Result<ServerConfig> {
         .parse::<u16>()
         .unwrap_or(8191);
 
-    let proxy = if let (Some(username), Some(password)) = (proxy_username, proxy_password) {
-        ProxyConfig::with_auth(proxy_host, proxy_port, username, password)
-    } else {
-        ProxyConfig::new(proxy_host, proxy_port)
+    let proxy = match (proxy_username, proxy_password) {
+        (Some(username), Some(password)) => {
+            ProxyConfig::with_auth(proxy_host, proxy_port, username, password)
+        }
+        _ => ProxyConfig::new(proxy_host, proxy_port),
     };
 
     let scrappey = ScrappeyConfig::new(scrappey_api_key);

@@ -11,6 +11,15 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+/// HTTP version string
+const HTTP_VERSION: &str = "HTTP/1.1";
+
+/// HTTP connection close header
+const CONNECTION_CLOSE: &str = "Connection: close";
+
+/// HTTP 200 Connection established response
+const HTTP_200_CONNECTION_ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+
 /// Configuration for the HTTP-to-HTTP proxy bridge.
 /// Allows specifying upstream proxy address, port, and optional authentication.
 #[derive(Debug, Clone)]
@@ -172,7 +181,7 @@ async fn handle_connect_method(
     let mut proxy_stream = connect_to_downstream_proxy(&config).await?;
 
     // --- Send CONNECT request to the downstream proxy ---
-    let mut connect_request = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    let mut connect_request = format!("CONNECT {target} {HTTP_VERSION}\r\nHost: {target}\r\n");
 
     // Add authentication header if configured
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
@@ -181,7 +190,7 @@ async fn handle_connect_method(
         connect_request.push_str(&format!("Proxy-Authorization: Basic {encoded}\r\n"));
     }
 
-    connect_request.push_str("Connection: close\r\n\r\n"); // End of headers
+    connect_request.push_str(&format!("{CONNECTION_CLOSE}\r\n\r\n")); // End of headers
     proxy_stream.write_all(connect_request.as_bytes()).await?;
 
     // --- Read response from the downstream proxy ---
@@ -222,7 +231,7 @@ async fn handle_connect_method(
     // Now, send the "200 Connection established" back to the original client
     let mut client_stream = client_reader.into_inner();
     client_stream
-        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        .write_all(HTTP_200_CONNECTION_ESTABLISHED)
         .await?;
 
     // Read and discard any remaining headers from the original client's CONNECT request

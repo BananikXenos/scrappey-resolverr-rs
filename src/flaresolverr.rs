@@ -6,13 +6,15 @@ use axum::{
     response::Json as ResponseJson,
     routing::{get, post},
 };
-use log::{error, info, warn};
+use log::{debug, warn};
+
+use crate::logging::{LogContext, TimingLogger};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thirtyfour::Cookie;
 
-use crate::browser::Browser;
 use crate::config::ServerConfig;
+use crate::session::SessionManager;
 
 /// This module implements the FlareSolverr-compatible API server.
 /// It provides endpoints for challenge-solving automation, health checks, and session management.
@@ -148,32 +150,44 @@ pub struct ErrorResponse {
 /// Main API struct for FlareSolverr-compatible server.
 pub struct FlareSolverrAPI {
     config: ServerConfig,
+    session_manager: SessionManager,
 }
 
 impl FlareSolverrAPI {
     /// Create a new API instance with the given config.
     pub fn new(config: ServerConfig) -> Self {
-        Self { config }
+        let browser_config = config.to_browser_config();
+        let data_dir = std::path::Path::new(&config.data_path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/data"))
+            .join("sessions");
+
+        let session_manager = SessionManager::new(browser_config, data_dir);
+
+        Self {
+            config,
+            session_manager,
+        }
     }
 
     /// Build the Axum router with all endpoints.
     pub fn create_router(&self) -> Router {
         let config = self.config.clone();
+        let session_manager = self.session_manager.clone();
 
         Router::new()
             .route("/", get(index))
             .route("/health", get(health))
             .route(
                 "/v1",
-                post(move |request| v1_handler(request, config.clone())),
+                post(move |request| v1_handler(request, config.clone(), session_manager.clone())),
             )
     }
 }
 
-// Handler for the index page
 /// Handler for the index page ("/").
 async fn index() -> ResponseJson<IndexResponse> {
-    info!("Index endpoint called");
+    debug!("Index endpoint accessed");
     ResponseJson(IndexResponse {
         msg: "FlareSolverr is ready!".to_string(),
         version: FLARESOLVERR_VERSION.to_string(),
@@ -181,35 +195,51 @@ async fn index() -> ResponseJson<IndexResponse> {
     })
 }
 
-// Handler for health check
 /// Handler for health check ("/health").
 async fn health() -> ResponseJson<HealthResponse> {
-    info!("Health endpoint called");
+    debug!("Health check endpoint accessed");
     ResponseJson(HealthResponse {
         status: STATUS_OK.to_string(),
     })
 }
 
-// Main V1 API handler
 /// Main handler for the v1 API endpoint ("/v1").
 /// Handles all challenge-solving and session commands.
 async fn v1_handler(
     Json(request): Json<V1Request>,
     config: ServerConfig,
+    session_manager: SessionManager,
 ) -> Result<ResponseJson<V1Response>, (StatusCode, ResponseJson<ErrorResponse>)> {
     let start_timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
 
-    info!("Incoming request => POST /v1 body: {request:?}");
+    let timing = TimingLogger::new("v1_request");
+    let session_id_clone = request.session.clone();
+    let session_id = session_id_clone.as_deref();
+    let url_clone = request.url.clone();
+    let url = url_clone.as_deref();
+    let cmd = request.cmd.clone();
 
-    let result = handle_v1_request(request, config).await;
+    let mut ctx = LogContext::new().with_operation(&cmd);
+    if let Some(sid) = session_id {
+        ctx = ctx.with_session(sid);
+    }
+    if let Some(u) = url {
+        ctx = ctx.with_url(u);
+    }
+
+    ctx.info("Incoming API request");
+
+    let result = handle_v1_request(request, config, session_manager).await;
 
     let end_timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let duration_ms = (end_timestamp - start_timestamp) as f64 / 1000.0;
 
     match result {
         Ok(mut response) => {
@@ -217,10 +247,16 @@ async fn v1_handler(
             response.end_timestamp = end_timestamp;
             response.version = FLARESOLVERR_VERSION.to_string();
 
-            info!(
-                "Response in {} s",
-                (end_timestamp - start_timestamp) as f64 / 1000.0
-            );
+            let mut timing_logger = timing.with_session(session_id.unwrap_or("none"));
+            if let Some(u) = url {
+                timing_logger = timing_logger.with_url(u);
+            }
+            timing_logger.finish();
+
+            ctx.info(&format!(
+                "Request completed successfully in {:.2}s",
+                duration_ms
+            ));
             Ok(ResponseJson(response))
         }
         Err(error_msg) => {
@@ -235,36 +271,47 @@ async fn v1_handler(
                 sessions: None,
             };
 
-            error!("Error: {error_msg}");
+            ctx.error(&format!(
+                "Request failed after {:.2}s: {}",
+                duration_ms, error_msg
+            ));
             Ok(ResponseJson(error_response))
         }
     }
 }
 
 /// Dispatches the v1 API command to the appropriate handler.
-async fn handle_v1_request(req: V1Request, config: ServerConfig) -> Result<V1Response, String> {
+async fn handle_v1_request(
+    req: V1Request,
+    config: ServerConfig,
+    session_manager: SessionManager,
+) -> Result<V1Response, String> {
     // Validate required fields
     if req.cmd.is_empty() {
         return Err("Request parameter 'cmd' is mandatory.".to_string());
     }
 
+    let ctx = LogContext::new().with_operation(&req.cmd);
+
     // Warn about deprecated parameters for compatibility
     if req.headers.is_some() {
-        warn!("Warning: Request parameter 'headers' was removed in FlareSolverr v2.");
+        ctx.warn("Deprecated parameter 'headers' was removed in FlareSolverr v2");
     }
     if req.user_agent.is_some() {
-        warn!("Warning: Request parameter 'userAgent' was removed in FlareSolverr v2.");
+        ctx.warn("Deprecated parameter 'userAgent' was removed in FlareSolverr v2");
     }
 
     // Set default timeout (ms to seconds)
-    let max_timeout = req.max_timeout.unwrap_or(60000) / 1000;
+    const DEFAULT_TIMEOUT_MS: u32 = 60000;
+    const MS_TO_SECONDS: u32 = 1000;
+    let max_timeout = req.max_timeout.unwrap_or(DEFAULT_TIMEOUT_MS) / MS_TO_SECONDS;
 
     match req.cmd.as_str() {
-        "request.get" => handle_request_get(req, max_timeout, config).await,
-        "request.post" => handle_request_post(req, max_timeout, config).await,
-        "sessions.create" => handle_sessions_create(req).await,
-        "sessions.list" => handle_sessions_list(req).await,
-        "sessions.destroy" => handle_sessions_destroy(req).await,
+        "request.get" => handle_request_get(req, max_timeout, config, session_manager).await,
+        "request.post" => handle_request_post(req, max_timeout, config, session_manager).await,
+        "sessions.create" => handle_sessions_create(req, config, session_manager).await,
+        "sessions.list" => handle_sessions_list(req, session_manager).await,
+        "sessions.destroy" => handle_sessions_destroy(req, session_manager).await,
         _ => Err(format!(
             "Request parameter 'cmd' = '{}' is invalid.",
             req.cmd
@@ -277,6 +324,7 @@ async fn handle_request_get(
     req: V1Request,
     max_timeout: u32,
     config: ServerConfig,
+    session_manager: SessionManager,
 ) -> Result<V1Response, String> {
     // Validate GET request
     if req.url.is_none() {
@@ -294,22 +342,63 @@ async fn handle_request_get(
 
     let url = req.url.unwrap();
 
-    // Create browser instance with config
-    let mut browser_config = config.to_browser_config();
-    browser_config.webdriver.window_size = (1280, 720);
-    let mut browser = Browser::new().with_config(browser_config);
+    // Use session if provided, otherwise create a temporary one
+    let session_id = if let Some(ref session_id) = req.session {
+        session_id.clone()
+    } else {
+        // Create a temporary session for this request
+        session_manager
+            .create_session(req.session_ttl_minutes)
+            .await
+            .map_err(|e| format!("Failed to create session: {e}"))?
+    };
 
-    // Try to load browser data if available (for session persistence)
-    if let Err(e) = browser.load_data(&config.data_path) {
-        warn!("Failed to load browser data, starting fresh: {e}");
-    }
+    let ctx = LogContext::new().with_session(&session_id).with_url(&url);
+
+    // Execute request with session
+    let response_result = session_manager
+        .with_session(&session_id, |session| {
+            session.browser.config.webdriver.window_size = (1280, 720);
+
+            // Load session data if available
+            if let Err(e) = session.load() {
+                ctx.warn(&format!("Failed to load session data: {}", e));
+            } else {
+                ctx.debug(&format!(
+                    "Session data loaded ({} cookies)",
+                    session.browser.data.cookies.len()
+                ));
+            }
+
+            // Return session for async operation
+            (session.browser.clone(), session.id.clone())
+        })
+        .await;
+
+    let (mut browser, session_id_clone) = match response_result {
+        Some((browser, sid)) => (browser, sid),
+        None => {
+            return Err(format!("Session not found: {}", session_id));
+        }
+    };
 
     // Navigate to the URL and solve challenges
     match browser.get(&url, u64::from(max_timeout)).await {
         Ok(response) => {
-            // Save browser data after navigation
-            if let Err(e) = browser.save_data(&config.data_path) {
-                warn!("Failed to save browser data: {e}");
+            // Save session data after navigation
+            if let Some(Err(e)) = session_manager
+                .with_session(&session_id_clone, |session| {
+                    session.browser.data = browser.data.clone();
+                    session.save()
+                })
+                .await
+            {
+                ctx.warn(&format!("Failed to save session data: {}", e));
+            } else {
+                ctx.debug(&format!(
+                    "Session data saved ({} cookies)",
+                    browser.data.cookies.len()
+                ));
             }
 
             // Convert browser response to FlareSolverr format
@@ -337,15 +426,18 @@ async fn handle_request_get(
                 end_timestamp: 0,   // Will be set by caller
                 version: FLARESOLVERR_VERSION.to_string(),
                 solution: Some(solution),
-                session: None,
+                session: Some(session_id_clone),
                 sessions: None,
             })
         }
         Err(e) => {
             // Save browser data even on error
-            if let Err(save_err) = browser.save_data(&config.data_path) {
-                warn!("Failed to save browser data: {save_err}");
-            }
+            let _ = session_manager
+                .with_session(&session_id_clone, |session| {
+                    session.browser.data = browser.data.clone();
+                    session.save()
+                })
+                .await;
 
             Err(format!("Error solving the challenge: {e}"))
         }
@@ -357,6 +449,7 @@ async fn handle_request_post(
     req: V1Request,
     _max_timeout: u32,
     _config: ServerConfig,
+    _session_manager: SessionManager,
 ) -> Result<V1Response, String> {
     // Validate POST request
     if req.post_data.is_none() {
@@ -374,19 +467,72 @@ async fn handle_request_post(
     Err("POST requests are not yet implemented.".to_string())
 }
 
-/// Handler for session creation (not implemented).
-async fn handle_sessions_create(_req: V1Request) -> Result<V1Response, String> {
-    Err("Sessions are not implemented in this version.".to_string())
+/// Handler for session creation.
+async fn handle_sessions_create(
+    req: V1Request,
+    _config: ServerConfig,
+    session_manager: SessionManager,
+) -> Result<V1Response, String> {
+    let session_id = session_manager
+        .create_session(req.session_ttl_minutes)
+        .await
+        .map_err(|e| format!("Failed to create session: {e}"))?;
+
+    Ok(V1Response {
+        status: STATUS_OK.to_string(),
+        message: "Session created successfully.".to_string(),
+        start_timestamp: 0,
+        end_timestamp: 0,
+        version: FLARESOLVERR_VERSION.to_string(),
+        solution: None,
+        session: Some(session_id),
+        sessions: None,
+    })
 }
 
-/// Handler for session listing (not implemented).
-async fn handle_sessions_list(_req: V1Request) -> Result<V1Response, String> {
-    Err("Sessions are not implemented in this version.".to_string())
+/// Handler for session listing.
+async fn handle_sessions_list(
+    _req: V1Request,
+    session_manager: SessionManager,
+) -> Result<V1Response, String> {
+    let sessions = session_manager.list_sessions().await;
+
+    Ok(V1Response {
+        status: STATUS_OK.to_string(),
+        message: format!("Found {} active session(s).", sessions.len()),
+        start_timestamp: 0,
+        end_timestamp: 0,
+        version: FLARESOLVERR_VERSION.to_string(),
+        solution: None,
+        session: None,
+        sessions: Some(sessions),
+    })
 }
 
-/// Handler for session destruction (not implemented).
-async fn handle_sessions_destroy(_req: V1Request) -> Result<V1Response, String> {
-    Err("Sessions are not implemented in this version.".to_string())
+/// Handler for session destruction.
+async fn handle_sessions_destroy(
+    req: V1Request,
+    session_manager: SessionManager,
+) -> Result<V1Response, String> {
+    let session_id = req.session.ok_or_else(|| {
+        "Request parameter 'session' is mandatory in 'sessions.destroy' command.".to_string()
+    })?;
+
+    session_manager
+        .destroy_session(&session_id)
+        .await
+        .map_err(|e| format!("Failed to destroy session: {e}"))?;
+
+    Ok(V1Response {
+        status: STATUS_OK.to_string(),
+        message: "Session destroyed successfully.".to_string(),
+        start_timestamp: 0,
+        end_timestamp: 0,
+        version: FLARESOLVERR_VERSION.to_string(),
+        solution: None,
+        session: Some(session_id),
+        sessions: None,
+    })
 }
 
 /// Returns a placeholder user agent string for the index endpoint.
