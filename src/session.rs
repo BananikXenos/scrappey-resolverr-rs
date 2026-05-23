@@ -19,7 +19,6 @@ pub const DEFAULT_SESSION_ID: &str = "default";
 pub struct Session {
     pub id: String,
     pub browser: Browser,
-    pub created_at: DateTime<Utc>,
     pub last_used: DateTime<Utc>,
     pub ttl_minutes: Option<u32>,
     data_path: PathBuf,
@@ -49,7 +48,6 @@ impl Session {
         Ok(Self {
             id,
             browser,
-            created_at: now,
             last_used: now,
             ttl_minutes,
             data_path,
@@ -62,9 +60,14 @@ impl Session {
     }
 
     /// Check if session has expired.
+    /// TTL is anchored on `last_used` (idle TTL), matching FlareSolverr's
+    /// semantics — an actively-used session stays alive indefinitely;
+    /// only sessions that haven't been touched for `ttl_minutes` get reaped.
+    /// Previously anchored on `created_at`, which killed long-running
+    /// sessions mid-use.
     pub fn is_expired(&self) -> bool {
         self.ttl_minutes
-            .is_some_and(|ttl| Utc::now() > self.created_at + chrono::Duration::minutes(ttl as i64))
+            .is_some_and(|ttl| Utc::now() > self.last_used + chrono::Duration::minutes(ttl as i64))
     }
 
     /// Save session data to disk.
