@@ -1,4 +1,10 @@
 # ---- Base Stage: Install build tools and caching helpers ----
+# Pinned to nightly because the `transparent` crate's build.rs has a top-level
+# `#![feature(exit_status_error)]` attribute. The feature is only *used* on
+# Windows but the attribute is at crate level, so stable Rust refuses to compile
+# the build script on any platform. Track upstream for a fix:
+#   https://github.com/OpenByteDev/transparent
+# (Edition 2024 has been stable since 1.85; let-chains since 1.88; both fine.)
 FROM rustlang/rust:nightly AS base
 
 # Install sccache and cargo-chef for build caching
