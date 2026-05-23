@@ -1,5 +1,31 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use log::warn;
 use serde::{Deserialize, Serialize};
+
+use crate::scrappey::ScrappeyClient;
+
+/// Read a required env var and return a helpful error if it's not set.
+fn require_env(name: &str) -> Result<String> {
+    std::env::var(name).with_context(|| format!("Required environment variable {name} not set"))
+}
+
+/// Parse a numeric env var, warning (and falling back to default) on bad input.
+fn parse_env_with_default<T>(name: &str, default: T) -> T
+where
+    T: std::str::FromStr + std::fmt::Display + Copy,
+    <T as std::str::FromStr>::Err: std::fmt::Display,
+{
+    match std::env::var(name) {
+        Ok(raw) => match raw.parse::<T>() {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Invalid value for {name} ({raw:?}): {e}; falling back to {default}");
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
 
 /// Proxy configuration for HTTP/SOCKS proxy settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,22 +81,6 @@ impl Default for ProxyConfig {
     }
 }
 
-/// Scrappey API configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ScrappeyConfig {
-    pub api_key: String,
-}
-
-impl ScrappeyConfig {
-    pub fn new(api_key: String) -> Self {
-        Self { api_key }
-    }
-
-    pub fn is_configured(&self) -> bool {
-        !self.api_key.is_empty()
-    }
-}
-
 /// Screenshot configuration for debugging and failure capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScreenshotConfig {
@@ -79,7 +89,6 @@ pub struct ScreenshotConfig {
     pub max_failure_screenshots: usize,
 }
 
-#[allow(dead_code)]
 impl ScreenshotConfig {
     pub fn new(
         capture_failure_screenshots: bool,
@@ -90,14 +99,6 @@ impl ScreenshotConfig {
             capture_failure_screenshots,
             screenshot_dir,
             max_failure_screenshots,
-        }
-    }
-
-    pub fn disabled() -> Self {
-        Self {
-            capture_failure_screenshots: false,
-            screenshot_dir: "/tmp".to_string(),
-            max_failure_screenshots: 10,
         }
     }
 }
@@ -119,54 +120,40 @@ pub struct WebDriverConfig {
     pub window_size: (u32, u32),
 }
 
-#[allow(dead_code)]
-impl WebDriverConfig {
-    pub fn new(url: String, window_size: (u32, u32)) -> Self {
-        Self { url, window_size }
-    }
-}
-
 impl Default for WebDriverConfig {
     fn default() -> Self {
         Self {
             url: "http://localhost:9515".to_string(),
-            window_size: (1920, 1080),
+            // 1280x720 is small enough that Cloudflare/JS challenges treat
+            // the browser as "normal viewport" and large enough that
+            // content lays out as expected. Keep in sync with the previous
+            // per-request override in flaresolverr.rs.
+            window_size: (1280, 720),
         }
     }
 }
 
 /// Browser automation configuration.
 /// Combines all the configuration components needed for browser operations.
+/// `scrappey` is a pre-built client (not just config) so its reqwest
+/// connection pool is shared across all challenge-fallback calls instead of
+/// being rebuilt every Cloudflare fallback.
 #[derive(Debug, Clone, Default)]
 pub struct BrowserConfig {
     pub webdriver: WebDriverConfig,
     pub proxy: ProxyConfig,
-    pub scrappey: ScrappeyConfig,
+    pub scrappey: ScrappeyClient,
     pub screenshots: ScreenshotConfig,
 }
 
-#[allow(dead_code)]
-impl BrowserConfig {
-    pub fn new(
-        webdriver: WebDriverConfig,
-        proxy: ProxyConfig,
-        scrappey: ScrappeyConfig,
-        screenshots: ScreenshotConfig,
-    ) -> Self {
-        Self {
-            webdriver,
-            proxy,
-            scrappey,
-            screenshots,
-        }
-    }
-}
-
 /// API server configuration for the FlareSolverr-compatible server.
+/// `scrappey` is a fully-constructed client (built once at load time) so
+/// both the startup balance check and every Cloudflare fallback share the
+/// same reqwest connection pool.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub proxy: ProxyConfig,
-    pub scrappey: ScrappeyConfig,
+    pub scrappey: ScrappeyClient,
     pub screenshots: ScreenshotConfig,
     pub data_path: String,
     pub host: String,
@@ -176,7 +163,7 @@ pub struct ServerConfig {
 impl ServerConfig {
     pub fn new(
         proxy: ProxyConfig,
-        scrappey: ScrappeyConfig,
+        scrappey: ScrappeyClient,
         screenshots: ScreenshotConfig,
         data_path: String,
         host: String,
@@ -211,7 +198,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             proxy: ProxyConfig::default(),
-            scrappey: ScrappeyConfig::default(),
+            scrappey: ScrappeyClient::default(),
             screenshots: ScreenshotConfig::default(),
             data_path: "/data".to_string(),
             host: "0.0.0.0".to_string(),
@@ -222,29 +209,21 @@ impl Default for ServerConfig {
 
 /// Load configuration from environment variables.
 pub fn load_from_env() -> Result<ServerConfig> {
-    let scrappey_api_key = std::env::var("SCRAPPEY_API_KEY")?;
-    let proxy_host = std::env::var("PROXY_HOST")?;
-    let proxy_port = std::env::var("PROXY_PORT")?
-        .parse::<u16>()
-        .map_err(|_| anyhow::anyhow!("Invalid PROXY_PORT"))?;
+    let scrappey_api_key = require_env("SCRAPPEY_API_KEY")?;
+    let proxy_host = require_env("PROXY_HOST")?;
+    let proxy_port: u16 = require_env("PROXY_PORT")?
+        .parse()
+        .context("PROXY_PORT must be an integer in 0..=65535")?;
     let proxy_username = std::env::var("PROXY_USERNAME").ok();
     let proxy_password = std::env::var("PROXY_PASSWORD").ok();
     let data_path = std::env::var("DATA_PATH").unwrap_or_else(|_| "/data".to_string());
-    let capture_failure_screenshots = std::env::var("CAPTURE_FAILURE_SCREENSHOTS")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
+    let capture_failure_screenshots =
+        parse_env_with_default::<bool>("CAPTURE_FAILURE_SCREENSHOTS", true);
     let screenshot_dir =
         std::env::var("SCREENSHOT_DIR").unwrap_or_else(|_| "/data/screenshots".to_string());
-    let max_failure_screenshots = std::env::var("MAX_FAILURE_SCREENSHOTS")
-        .unwrap_or_else(|_| "10".to_string())
-        .parse::<usize>()
-        .unwrap_or(10);
+    let max_failure_screenshots = parse_env_with_default::<usize>("MAX_FAILURE_SCREENSHOTS", 10);
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = std::env::var("PORT")
-        .unwrap_or_else(|_| "8191".to_string())
-        .parse::<u16>()
-        .unwrap_or(8191);
+    let port = parse_env_with_default::<u16>("PORT", 8191);
 
     let proxy = match (proxy_username, proxy_password) {
         (Some(username), Some(password)) => {
@@ -253,7 +232,7 @@ pub fn load_from_env() -> Result<ServerConfig> {
         _ => ProxyConfig::new(proxy_host, proxy_port),
     };
 
-    let scrappey = ScrappeyConfig::new(scrappey_api_key);
+    let scrappey = ScrappeyClient::new(scrappey_api_key);
     let screenshots = ScreenshotConfig::new(
         capture_failure_screenshots,
         screenshot_dir,

@@ -2,11 +2,11 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::browser::Browser;
@@ -19,7 +19,6 @@ pub const DEFAULT_SESSION_ID: &str = "default";
 pub struct Session {
     pub id: String,
     pub browser: Browser,
-    pub created_at: DateTime<Utc>,
     pub last_used: DateTime<Utc>,
     pub ttl_minutes: Option<u32>,
     data_path: PathBuf,
@@ -40,16 +39,15 @@ impl Session {
         let now = Utc::now();
 
         let mut browser = Browser::new().with_config(config);
-        if data_path.exists() {
-            if let Err(e) = browser.load_data(data_path.to_str().unwrap()) {
-                debug!("Could not load session data for {}: {e}", id);
-            }
+        if data_path.exists()
+            && let Err(e) = browser.load_data(&data_path)
+        {
+            debug!("Could not load session data for {}: {e}", id);
         }
 
         Ok(Self {
             id,
             browser,
-            created_at: now,
             last_used: now,
             ttl_minutes,
             data_path,
@@ -62,10 +60,14 @@ impl Session {
     }
 
     /// Check if session has expired.
+    /// TTL is anchored on `last_used` (idle TTL), matching FlareSolverr's
+    /// semantics — an actively-used session stays alive indefinitely;
+    /// only sessions that haven't been touched for `ttl_minutes` get reaped.
+    /// Previously anchored on `created_at`, which killed long-running
+    /// sessions mid-use.
     pub fn is_expired(&self) -> bool {
-        self.ttl_minutes.map_or(false, |ttl| {
-            Utc::now() > self.created_at + chrono::Duration::minutes(ttl as i64)
-        })
+        self.ttl_minutes
+            .is_some_and(|ttl| Utc::now() > self.last_used + chrono::Duration::minutes(ttl as i64))
     }
 
     /// Save session data to disk.
@@ -73,22 +75,27 @@ impl Session {
         if let Some(parent) = self.data_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        self.browser.save_data(self.data_path.to_str().unwrap())
+        self.browser.save_data(&self.data_path)
     }
 
     /// Load session data from disk.
     pub fn load(&mut self) -> Result<()> {
         if self.data_path.exists() {
-            self.browser.load_data(self.data_path.to_str().unwrap())
+            self.browser.load_data(&self.data_path)
         } else {
             Ok(())
         }
     }
 }
 
+/// Type alias for the shared, per-session lock. Holding this serializes
+/// concurrent requests against the same session id so cookie/UA updates
+/// can't clobber each other.
+pub type SessionHandle = Arc<Mutex<Session>>;
+
 /// Thread-safe session manager.
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     config: BrowserConfig,
     data_dir: PathBuf,
     _cleanup_handle: Arc<tokio::task::JoinHandle<()>>,
@@ -117,7 +124,10 @@ impl SessionManager {
                 .expect("Failed to create default session");
 
         let mut sessions = HashMap::new();
-        sessions.insert(DEFAULT_SESSION_ID.to_string(), default_session);
+        sessions.insert(
+            DEFAULT_SESSION_ID.to_string(),
+            Arc::new(Mutex::new(default_session)),
+        );
         let sessions = Arc::new(RwLock::new(sessions));
 
         info!("[session={}] Default session preloaded", DEFAULT_SESSION_ID);
@@ -152,7 +162,10 @@ impl SessionManager {
         let session = Session::new(self.config.clone(), &self.data_dir, ttl_minutes, None)?;
         let id = session.id.clone();
 
-        self.sessions.write().await.insert(id.clone(), session);
+        self.sessions
+            .write()
+            .await
+            .insert(id.clone(), Arc::new(Mutex::new(session)));
         info!(
             "[session={}] Created (TTL: {})",
             id,
@@ -161,16 +174,11 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// Execute a function with a mutable session reference.
-    pub async fn with_session<F, R>(&self, id: &str, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut Session) -> R,
-    {
-        let mut sessions = self.sessions.write().await;
-        sessions.get_mut(id).map(|session| {
-            session.touch();
-            f(session)
-        })
+    /// Look up a session by id and return its shared handle.
+    /// Callers should `.lock().await` the handle for the duration of any work
+    /// against the session so concurrent requests on the same id serialize.
+    pub async fn get_session(&self, id: &str) -> Option<SessionHandle> {
+        self.sessions.read().await.get(id).cloned()
     }
 
     /// List all active session IDs.
@@ -184,9 +192,17 @@ impl SessionManager {
             anyhow::bail!("Cannot destroy the default session");
         }
 
-        let mut sessions = self.sessions.write().await;
-        match sessions.remove(id) {
-            Some(session) => {
+        let handle = {
+            let mut sessions = self.sessions.write().await;
+            sessions.remove(id)
+        };
+
+        match handle {
+            Some(handle) => {
+                // Wait for any in-flight request on this session to drain before
+                // we touch the on-disk state and tear down the pooled driver.
+                let mut session = handle.lock().await;
+                session.browser.shutdown().await;
                 session.save().ok();
                 if session.data_path.exists() {
                     std::fs::remove_file(&session.data_path).ok();
@@ -197,34 +213,56 @@ impl SessionManager {
             None => anyhow::bail!("Session not found: {}", id),
         }
     }
-
-    /// Save all sessions to disk.
-    #[allow(dead_code)]
-    pub async fn save_all(&self) {
-        for session in self.sessions.read().await.values() {
-            if let Err(e) = session.save() {
-                warn!("Failed to save session {}: {e}", session.id);
-            }
-        }
-    }
 }
 
 /// Clean up expired sessions (excluding default).
-async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, Session>>>) {
-    let mut sessions = sessions.write().await;
-    let expired: Vec<_> = sessions
-        .iter()
-        .filter(|(id, s)| *id != DEFAULT_SESSION_ID && s.is_expired())
-        .map(|(id, _)| id.clone())
-        .collect();
+async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, SessionHandle>>>) {
+    // Phase 1: snapshot ids+handles under the read lock so we can probe
+    // expiry without blocking new lookups.
+    let candidates: Vec<(String, SessionHandle)> = {
+        let sessions = sessions.read().await;
+        sessions
+            .iter()
+            .filter(|(id, _)| *id != DEFAULT_SESSION_ID)
+            .map(|(id, handle)| (id.clone(), Arc::clone(handle)))
+            .collect()
+    };
 
-    for id in expired {
-        if let Some(session) = sessions.remove(&id) {
-            session.save().ok();
-            if session.data_path.exists() {
-                std::fs::remove_file(&session.data_path).ok();
-            }
-            debug!("[session={}] Expired and cleaned up", id);
+    let mut expired_ids = Vec::new();
+    for (id, handle) in candidates {
+        // try_lock so we don't block on a session that's mid-request; if
+        // it's busy we'll re-check on the next sweep.
+        if let Ok(session) = handle.try_lock()
+            && session.is_expired()
+        {
+            expired_ids.push(id);
         }
+    }
+
+    if expired_ids.is_empty() {
+        return;
+    }
+
+    // Phase 2: remove from the map.
+    let handles: Vec<(String, SessionHandle)> = {
+        let mut sessions = sessions.write().await;
+        expired_ids
+            .into_iter()
+            .filter_map(|id| sessions.remove(&id).map(|h| (id, h)))
+            .collect()
+    };
+
+    // Phase 3: outside the map lock, shut down each driver and clean up disk.
+    // We use lock() (not try_lock) here because cleanup ran try_lock once
+    // already and saw they were free; if a request grabbed it between phases
+    // we just wait for that one to finish.
+    for (id, handle) in handles {
+        let mut session = handle.lock().await;
+        session.browser.shutdown().await;
+        session.save().ok();
+        if session.data_path.exists() {
+            std::fs::remove_file(&session.data_path).ok();
+        }
+        debug!("[session={}] Expired and cleaned up", id);
     }
 }

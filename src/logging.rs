@@ -81,13 +81,6 @@ impl TimingLogger {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn with_session(mut self, session_id: &str) -> Self {
-        self.context = self.context.with_session(session_id);
-        self
-    }
-
-    #[allow(dead_code)]
     pub fn with_url(mut self, url: &str) -> Self {
         self.context = self.context.with_url(url);
         self

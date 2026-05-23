@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! HTTP-to-HTTP proxy bridge for forwarding requests to an upstream proxy,
 //! with optional authentication support. Used to bridge no-auth local proxy
 //! to authenticated upstream proxies for browser automation.
@@ -113,23 +111,6 @@ impl HttpProxyBridge {
             }
         }
     }
-
-    /// Get the local address the server is bound to.
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.listener
-            .as_ref()
-            .ok_or_else(|| anyhow!("Server not bound"))?
-            .local_addr()
-            .map_err(Into::into)
-    }
-}
-
-/// Convenience function to create and run a proxy bridge server.
-/// Binds and serves on the given address.
-pub async fn run_http_proxy_bridge(bind_addr: SocketAddr, config: FwdProxyConfig) -> Result<()> {
-    let mut bridge = HttpProxyBridge::new(config);
-    bridge.bind(bind_addr).await?;
-    bridge.serve().await
 }
 
 /// Handle a single client connection.
