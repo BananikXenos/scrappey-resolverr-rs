@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::scrappey::ScrappeyClient;
+
 /// Proxy configuration for HTTP/SOCKS proxy settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -55,22 +57,6 @@ impl Default for ProxyConfig {
     }
 }
 
-/// Scrappey API configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ScrappeyConfig {
-    pub api_key: String,
-}
-
-impl ScrappeyConfig {
-    pub fn new(api_key: String) -> Self {
-        Self { api_key }
-    }
-
-    pub fn is_configured(&self) -> bool {
-        !self.api_key.is_empty()
-    }
-}
-
 /// Screenshot configuration for debugging and failure capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScreenshotConfig {
@@ -121,19 +107,25 @@ impl Default for WebDriverConfig {
 
 /// Browser automation configuration.
 /// Combines all the configuration components needed for browser operations.
+/// `scrappey` is a pre-built client (not just config) so its reqwest
+/// connection pool is shared across all challenge-fallback calls instead of
+/// being rebuilt every Cloudflare fallback.
 #[derive(Debug, Clone, Default)]
 pub struct BrowserConfig {
     pub webdriver: WebDriverConfig,
     pub proxy: ProxyConfig,
-    pub scrappey: ScrappeyConfig,
+    pub scrappey: ScrappeyClient,
     pub screenshots: ScreenshotConfig,
 }
 
 /// API server configuration for the FlareSolverr-compatible server.
+/// `scrappey` is a fully-constructed client (built once at load time) so
+/// both the startup balance check and every Cloudflare fallback share the
+/// same reqwest connection pool.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub proxy: ProxyConfig,
-    pub scrappey: ScrappeyConfig,
+    pub scrappey: ScrappeyClient,
     pub screenshots: ScreenshotConfig,
     pub data_path: String,
     pub host: String,
@@ -143,7 +135,7 @@ pub struct ServerConfig {
 impl ServerConfig {
     pub fn new(
         proxy: ProxyConfig,
-        scrappey: ScrappeyConfig,
+        scrappey: ScrappeyClient,
         screenshots: ScreenshotConfig,
         data_path: String,
         host: String,
@@ -178,7 +170,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             proxy: ProxyConfig::default(),
-            scrappey: ScrappeyConfig::default(),
+            scrappey: ScrappeyClient::default(),
             screenshots: ScreenshotConfig::default(),
             data_path: "/data".to_string(),
             host: "0.0.0.0".to_string(),
@@ -220,7 +212,7 @@ pub fn load_from_env() -> Result<ServerConfig> {
         _ => ProxyConfig::new(proxy_host, proxy_port),
     };
 
-    let scrappey = ScrappeyConfig::new(scrappey_api_key);
+    let scrappey = ScrappeyClient::new(scrappey_api_key);
     let screenshots = ScreenshotConfig::new(
         capture_failure_screenshots,
         screenshot_dir,

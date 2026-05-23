@@ -5,7 +5,7 @@ use log::{debug, info, warn};
 use thirtyfour::{Cookie, prelude::*};
 
 use crate::browser::Response;
-use crate::config::{ProxyConfig, ScrappeyConfig};
+use crate::config::ProxyConfig;
 use crate::logging::{LogContext, TimingLogger};
 use crate::scrappey::{ScrappeyClient, ScrappeyGetRequest};
 
@@ -29,7 +29,7 @@ impl CloudflareHandler {
         &self,
         driver: &mut WebDriver,
         timeout: u64,
-        scrappey_config: Option<&ScrappeyConfig>,
+        scrappey: Option<&ScrappeyClient>,
         proxy_config: Option<&ProxyConfig>,
         url: &str,
         browser_cookies: &mut Vec<Cookie>,
@@ -43,7 +43,7 @@ impl CloudflareHandler {
         while self.is_protected(driver).await {
             if start_time.elapsed().as_secs() > cloudflare_timeout {
                 // Browser handling timed out, try Scrappey fallback if configured
-                if let (Some(scrappey), Some(proxy)) = (scrappey_config, proxy_config) {
+                if let (Some(scrappey), Some(proxy)) = (scrappey, proxy_config) {
                     warn!("Cloudflare challenge timed out, falling back to Scrappey");
                     return Self::fallback_to_scrappey(
                         scrappey,
@@ -71,14 +71,14 @@ impl CloudflareHandler {
 
     /// Use Scrappey API as a fallback to solve Cloudflare challenges.
     async fn fallback_to_scrappey(
-        scrappey_config: &ScrappeyConfig,
+        client: &ScrappeyClient,
         proxy_config: &ProxyConfig,
         url: &str,
         browser_cookies: &mut Vec<Cookie>,
         browser_user_agent: &mut String,
         timeout: u64,
     ) -> Result<Response> {
-        if !scrappey_config.is_configured() {
+        if !client.is_configured() {
             return Err(anyhow::anyhow!("Scrappey API key not configured"));
         }
 
@@ -91,7 +91,6 @@ impl CloudflareHandler {
         ));
 
         let scrappey_timing = TimingLogger::new("scrappey_resolve").with_url(url);
-        let client = ScrappeyClient::new(scrappey_config.api_key.clone());
         let request = ScrappeyGetRequest {
             url: url.to_string(),
             proxy: Some(proxy),

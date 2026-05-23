@@ -16,14 +16,32 @@ pub struct ScrappeyClient {
     endpoint: String,
 }
 
+impl Default for ScrappeyClient {
+    /// Unconfigured client — `is_configured()` returns false. Used as the
+    /// `BrowserConfig::default()` value; real instances come from
+    /// `ScrappeyClient::new(api_key)` once at server startup.
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}
+
 impl ScrappeyClient {
-    /// Create a new ScrappeyClient with the given API key.
+    /// Create a new ScrappeyClient with the given API key. The internal
+    /// reqwest::Client is built once (with its own connection pool) and
+    /// the whole struct is Clone, so callers should construct one instance
+    /// at startup and clone it into long-lived state instead of calling
+    /// `new` per request.
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
             client: Client::new(),
             endpoint: "https://publisher.scrappey.com/api/v1".to_string(),
         }
+    }
+
+    /// True when an API key is set and the client is usable.
+    pub fn is_configured(&self) -> bool {
+        !self.api_key.is_empty()
     }
 
     /// Check remaining balance (number of requests left) on the Scrappey account.
