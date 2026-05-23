@@ -3,13 +3,14 @@
 use axum::{
     Router,
     extract::Json,
-    response::Json as ResponseJson,
+    http::StatusCode,
+    response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
 };
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use thirtyfour::Cookie;
+use thirtyfour::{Cookie, SameSite};
 
 use crate::config::ServerConfig;
 use crate::logging::LogContext;
@@ -43,9 +44,37 @@ impl From<Cookie> for FlaresolverrCookie {
             domain: c.domain,
             path: c.path,
             expires: c.expiry.map_or(-1.0, |e| e as f64 / 1000.0),
-            http_only: false,
+            http_only: c.http_only.unwrap_or(false),
             secure: c.secure,
             same_site: c.same_site.map(|s| format!("{:?}", s)),
+        }
+    }
+}
+
+impl From<FlaresolverrCookie> for Cookie {
+    fn from(c: FlaresolverrCookie) -> Self {
+        let same_site = c.same_site.and_then(|s| match s.to_lowercase().as_str() {
+            "lax" => Some(SameSite::Lax),
+            "strict" => Some(SameSite::Strict),
+            "none" => Some(SameSite::None),
+            _ => None,
+        });
+        let expiry = if c.expires < 0.0 {
+            None
+        } else {
+            // FlareSolverr exposes `expires` in seconds since epoch (with
+            // fractional precision); thirtyfour wants i64 seconds.
+            Some(c.expires as i64)
+        };
+        Cookie {
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            expiry,
+            secure: c.secure,
+            http_only: Some(c.http_only),
+            same_site,
         }
     }
 }
@@ -165,6 +194,9 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// URL of the local chromedriver instance probed by the health endpoint.
+const CHROMEDRIVER_STATUS_URL: &str = "http://127.0.0.1:9515/status";
+
 /// FlareSolverr API server.
 pub struct FlareSolverrAPI {
     session_manager: SessionManager,
@@ -195,11 +227,57 @@ async fn index() -> ResponseJson<IndexResponse> {
     })
 }
 
-async fn health() -> ResponseJson<HealthResponse> {
+async fn health() -> impl IntoResponse {
     debug!("Health check");
-    ResponseJson(HealthResponse {
-        status: STATUS_OK.to_string(),
-    })
+    match probe_chromedriver().await {
+        Ok(()) => (
+            StatusCode::OK,
+            ResponseJson(HealthResponse {
+                status: STATUS_OK.to_string(),
+            }),
+        ),
+        Err(reason) => {
+            warn!("Health check failed: {}", reason);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ResponseJson(HealthResponse {
+                    status: format!("chromedriver unhealthy: {}", reason),
+                }),
+            )
+        }
+    }
+}
+
+/// Probe chromedriver's /status and confirm it reports ready=true.
+async fn probe_chromedriver() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("client: {}", e))?;
+
+    let resp = client
+        .get(CHROMEDRIVER_STATUS_URL)
+        .send()
+        .await
+        .map_err(|e| format!("connect: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("status: {}", resp.status()));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("parse: {}", e))?;
+
+    let ready = body
+        .get("value")
+        .and_then(|v| v.get("ready"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !ready {
+        return Err("chromedriver reports not ready".to_string());
+    }
+
+    Ok(())
 }
 
 async fn v1_handler(Json(req): Json<V1Request>, sm: SessionManager) -> ResponseJson<V1Response> {
@@ -253,47 +331,72 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
     // Warn about deprecated params
     warn_deprecated(&req);
 
+    // Per-request `proxy` would require rebuilding the proxy bridge per
+    // request and is not supported by this server. The upstream proxy is
+    // fixed at startup via env. Warn-and-ignore stays FlareSolverr-compatible.
+    if req.proxy.is_some() {
+        warn!("Per-request 'proxy' is ignored; upstream proxy is configured globally via env");
+    }
+    // `session_ttl_minutes` only has meaning at sessions.create time.
+    if req.session_ttl_minutes.is_some() {
+        warn!("'session_ttl_minutes' on request.get is ignored; set it on sessions.create");
+    }
+
     let timeout = req.max_timeout.unwrap_or(DEFAULT_TIMEOUT_MS) / 1000;
     let session_id = sm.resolve_session_id(req.session.as_deref());
     let is_default = session_id == DEFAULT_SESSION_ID;
 
-    // Get browser from session
-    let browser_result = sm
-        .with_session(&session_id, |session| {
-            session.browser.config.webdriver.window_size = (1280, 720);
-
-            // Only load from disk for non-default sessions
-            if !is_default {
-                session.load().ok();
-            }
-
-            debug!(
-                "[session={}] Using session ({} cookies)",
-                session_id,
-                session.browser.data.cookies.len()
-            );
-
-            session.browser.clone()
-        })
-        .await;
-
-    let mut browser = match browser_result {
-        Some(b) => b,
+    let handle = match sm.get_session(&session_id).await {
+        Some(h) => h,
         None => return V1Response::error(&format!("Session not found: {}", session_id)),
     };
 
-    // Navigate and solve challenge
-    match browser.get(&url, timeout.into()).await {
-        Ok(response) => {
-            // Save session data
-            sm.with_session(&session_id, |session| {
-                session.browser.data = browser.data.clone();
-                if let Err(e) = session.save() {
-                    warn!("[session={}] Failed to save: {}", session_id, e);
-                }
-            })
-            .await;
+    // Hold the per-session lock for the whole request so concurrent calls
+    // on the same session id serialize cleanly (no cookie/UA clobber).
+    let mut session = handle.lock().await;
+    session.touch();
 
+    // Only load from disk for non-default sessions; default was preloaded.
+    if !is_default {
+        session.load().ok();
+    }
+
+    // Merge per-request cookies into the session before navigation.
+    // Upsert on (name, domain, path) so clients can overwrite stale entries.
+    if let Some(extra) = req.cookies.clone() {
+        let added = extra.len();
+        for incoming in extra {
+            let incoming = Cookie::from(incoming);
+            if let Some(existing) = session.browser.data.cookies.iter_mut().find(|c| {
+                c.name == incoming.name && c.domain == incoming.domain && c.path == incoming.path
+            }) {
+                *existing = incoming;
+            } else {
+                session.browser.data.cookies.push(incoming);
+            }
+        }
+        debug!(
+            "[session={}] Merged {} client-supplied cookie(s)",
+            session_id, added
+        );
+    }
+
+    debug!(
+        "[session={}] Using session ({} cookies)",
+        session_id,
+        session.browser.data.cookies.len()
+    );
+
+    let nav_result = session.browser.get(&url, timeout.into()).await;
+
+    // Save session state regardless of success/failure so partial cookies
+    // from a failed challenge attempt are not lost.
+    if let Err(e) = session.save() {
+        warn!("[session={}] Failed to save: {}", session_id, e);
+    }
+
+    match nav_result {
+        Ok(response) => {
             let solution = Solution {
                 url: response.url,
                 status: response.status,
@@ -315,16 +418,7 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
                 .with_solution(solution)
                 .with_session(session_id)
         }
-        Err(e) => {
-            // Save data even on error
-            sm.with_session(&session_id, |session| {
-                session.browser.data = browser.data.clone();
-                session.save().ok();
-            })
-            .await;
-
-            V1Response::error(&format!("Challenge failed: {}", e))
-        }
+        Err(e) => V1Response::error(&format!("Challenge failed: {}", e)),
     }
 }
 
@@ -333,7 +427,12 @@ async fn handle_post(req: V1Request) -> V1Response {
         return V1Response::error("Parameter 'postData' is mandatory for request.post");
     }
     warn_deprecated(&req);
-    V1Response::error("POST requests not yet implemented")
+    // Explicit, loud, and unmistakable — Prowlarr will surface this in its UI
+    // instead of treating it as a transient indexer failure.
+    V1Response::error(
+        "request.post is not implemented by scrappey-resolverr-rs; \
+         configure your indexer to use GET or route POSTs through a different solver",
+    )
 }
 
 async fn handle_create(req: V1Request, sm: &SessionManager) -> V1Response {

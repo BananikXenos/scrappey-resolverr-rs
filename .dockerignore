@@ -1,9 +1,30 @@
-target
-.git
+# Rust build artifacts
+target/
+
+# VCS / scratch
+.git/
 .gitignore
-Dockerfile
-.dockerignore
+.github/
 *.rs.bk
 *.swp
-.idea
-data
+
+# IDE / editor
+.idea/
+.vscode/
+.zed/
+
+# Local data volume — keep out of build context to avoid sending cookies/
+# screenshots into the image.
+data/
+
+# Docs not needed at runtime
+README.md
+LICENSE
+CLAUDE.md
+
+# Claude Code workspace metadata
+.claude/
+
+# This file itself + the Dockerfile (Docker doesn't include them)
+Dockerfile
+.dockerignore

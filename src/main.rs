@@ -13,10 +13,11 @@ mod session;
 use config::ServerConfig;
 use flaresolverr::FlareSolverrAPI;
 
-use crate::scrappey::ScrappeyClient;
-
-/// Default proxy bridge bind address
-const PROXY_BRIDGE_ADDR: &str = "0.0.0.0:8080";
+/// Default proxy bridge bind address. Loopback-only: Chrome inside the
+/// container/host shares the network namespace, so 127.0.0.1 is reachable
+/// and we avoid exposing an authenticated-proxy relay if port 8080 is ever
+/// mapped or the binary is run outside Docker.
+const PROXY_BRIDGE_ADDR: &str = "127.0.0.1:8080";
 
 /// Default chromedriver path
 const CHROMEDRIVER_PATH: &str = "/usr/bin/chromedriver";
@@ -41,10 +42,11 @@ async fn main() -> Result<()> {
     // Load configuration from environment variables
     let config = config::load_from_env()?;
 
-    // Print scrappey API balance
+    // Print scrappey API balance using the shared client already built
+    // from the env config — it's the same instance that the cloudflare
+    // fallback will use, so we exercise its connection pool here too.
     info!("Initializing Scrappey client and checking API balance...");
-    let scrappey_client = ScrappeyClient::new(config.scrappey.api_key.clone());
-    match scrappey_client.get_balance(SCRAPPEY_BALANCE_TIMEOUT).await {
+    match config.scrappey.get_balance(SCRAPPEY_BALANCE_TIMEOUT).await {
         Ok(balance) => info!(
             "Scrappey API balance: {:.2} requests remaining",
             balance.balance
