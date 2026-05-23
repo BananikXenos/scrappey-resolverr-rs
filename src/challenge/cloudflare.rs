@@ -24,6 +24,7 @@ impl CloudflareHandler {
     }
 
     /// Handle Cloudflare challenge with optional Scrappey fallback.
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_with_fallback(
         &self,
         driver: &mut WebDriver,

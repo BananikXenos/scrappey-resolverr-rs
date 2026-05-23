@@ -264,10 +264,7 @@ async fn probe_chromedriver() -> Result<(), String> {
         return Err(format!("status: {}", resp.status()));
     }
 
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse: {}", e))?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("parse: {}", e))?;
 
     let ready = body
         .get("value")
@@ -337,9 +334,7 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
     // request and is not supported by this server. The upstream proxy is
     // fixed at startup via env. Warn-and-ignore stays FlareSolverr-compatible.
     if req.proxy.is_some() {
-        warn!(
-            "Per-request 'proxy' is ignored; upstream proxy is configured globally via env"
-        );
+        warn!("Per-request 'proxy' is ignored; upstream proxy is configured globally via env");
     }
     // `session_ttl_minutes` only has meaning at sessions.create time.
     if req.session_ttl_minutes.is_some() {
@@ -373,9 +368,7 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
         for incoming in extra {
             let incoming = Cookie::from(incoming);
             if let Some(existing) = session.browser.data.cookies.iter_mut().find(|c| {
-                c.name == incoming.name
-                    && c.domain == incoming.domain
-                    && c.path == incoming.path
+                c.name == incoming.name && c.domain == incoming.domain && c.path == incoming.path
             }) {
                 *existing = incoming;
             } else {

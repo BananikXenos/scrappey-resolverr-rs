@@ -6,9 +6,7 @@ use thirtyfour::{Proxy, extensions::cdp::ChromeDevTools, prelude::*};
 use crate::logging::{LogContext, TimingLogger, log_error_with_context};
 
 use crate::challenge::{
-    ChallengeHandler,
-    cloudflare::CloudflareHandler,
-    ddos_guard::DdosGuardHandler,
+    ChallengeHandler, cloudflare::CloudflareHandler, ddos_guard::DdosGuardHandler,
 };
 use crate::config::BrowserConfig;
 
@@ -82,10 +80,10 @@ impl Browser {
     /// Quit the pooled WebDriver if one is alive. Called on session destroy
     /// or expiry. Safe to call when no driver exists.
     pub async fn shutdown(&mut self) {
-        if let Some(driver) = self.driver.take() {
-            if let Err(e) = driver.quit().await {
-                warn!("WebDriver quit failed during shutdown: {}", e);
-            }
+        if let Some(driver) = self.driver.take()
+            && let Err(e) = driver.quit().await
+        {
+            warn!("WebDriver quit failed during shutdown: {}", e);
         }
     }
 
@@ -134,17 +132,16 @@ impl Browser {
 
         if let Err(ref e) = result {
             // Screenshot before any driver teardown so we still have a window.
-            if self.config.screenshots.capture_failure_screenshots {
-                if let Some(driver) = self.driver.as_ref() {
-                    if let Err(screenshot_err) = self.capture_failure_screenshot(driver, url).await
-                    {
-                        ctx.warn(&format!(
-                            "Failed to capture failure screenshot: {}",
-                            screenshot_err
-                        ));
-                    } else {
-                        ctx.debug("Failure screenshot captured");
-                    }
+            if let (true, Some(driver)) = (
+                self.config.screenshots.capture_failure_screenshots,
+                self.driver.as_ref(),
+            ) {
+                match self.capture_failure_screenshot(driver, url).await {
+                    Ok(()) => ctx.debug("Failure screenshot captured"),
+                    Err(screenshot_err) => ctx.warn(&format!(
+                        "Failed to capture failure screenshot: {}",
+                        screenshot_err
+                    )),
                 }
             }
 
@@ -175,7 +172,12 @@ impl Browser {
     /// Drive a single navigation against the pooled WebDriver.
     /// Pulled out so `get` can wrap it with screenshot + recovery handling
     /// without juggling the borrow on `self.driver`.
-    async fn navigate_once(&mut self, url: &str, timeout: u64, ctx: &LogContext) -> Result<Response> {
+    async fn navigate_once(
+        &mut self,
+        url: &str,
+        timeout: u64,
+        ctx: &LogContext,
+    ) -> Result<Response> {
         // Re-apply UA in case it changed (e.g. Scrappey fallback last request)
         // and re-set cookies. Both are idempotent.
         self.apply_user_agent().await?;
@@ -303,13 +305,11 @@ impl Browser {
     fn clean_expired_cookies(&mut self) {
         let now = chrono::Utc::now().timestamp();
         self.data.cookies.retain(|cookie| {
-            if let Some(expiry) = cookie.expiry {
-                if expiry <= now {
-                    debug!("Removing expired cookie: {cookie:?}");
-                    return false;
-                }
+            let expired = cookie.expiry.is_some_and(|expiry| expiry <= now);
+            if expired {
+                debug!("Removing expired cookie: {cookie:?}");
             }
-            true
+            !expired
         });
     }
 
@@ -442,7 +442,7 @@ impl Browser {
             .collect();
 
         // Sort by modification time (newest first)
-        screenshot_files.sort_by(|a, b| b.1.cmp(&a.1));
+        screenshot_files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
         // Remove old screenshots if we exceed the limit
         if screenshot_files.len() > self.config.screenshots.max_failure_screenshots {

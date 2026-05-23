@@ -40,10 +40,10 @@ impl Session {
         let now = Utc::now();
 
         let mut browser = Browser::new().with_config(config);
-        if data_path.exists() {
-            if let Err(e) = browser.load_data(&data_path) {
-                debug!("Could not load session data for {}: {e}", id);
-            }
+        if data_path.exists()
+            && let Err(e) = browser.load_data(&data_path)
+        {
+            debug!("Could not load session data for {}: {e}", id);
         }
 
         Ok(Self {
@@ -63,9 +63,8 @@ impl Session {
 
     /// Check if session has expired.
     pub fn is_expired(&self) -> bool {
-        self.ttl_minutes.map_or(false, |ttl| {
-            Utc::now() > self.created_at + chrono::Duration::minutes(ttl as i64)
-        })
+        self.ttl_minutes
+            .is_some_and(|ttl| Utc::now() > self.created_at + chrono::Duration::minutes(ttl as i64))
     }
 
     /// Save session data to disk.
@@ -230,10 +229,10 @@ async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, SessionHandle>>>)
     for (id, handle) in candidates {
         // try_lock so we don't block on a session that's mid-request; if
         // it's busy we'll re-check on the next sweep.
-        if let Ok(session) = handle.try_lock() {
-            if session.is_expired() {
-                expired_ids.push(id);
-            }
+        if let Ok(session) = handle.try_lock()
+            && session.is_expired()
+        {
+            expired_ids.push(id);
         }
     }
 
