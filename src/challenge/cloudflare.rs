@@ -109,10 +109,22 @@ impl CloudflareHandler {
             response.solution.cookies.as_ref().map(|c| c.len())
         );
 
-        // Update browser cookies and user agent
+        // Merge Scrappey cookies into the session, upserting on
+        // (name, domain, path) so a cookie returned by Scrappey replaces
+        // any existing one with the same identity tuple instead of
+        // adding a duplicate that Chrome would pick from at random.
         if let Some(cookies) = response.solution.cookies {
-            for cookie in cookies {
-                browser_cookies.push(Cookie::from(cookie));
+            for incoming in cookies {
+                let incoming = Cookie::from(incoming);
+                if let Some(existing) = browser_cookies.iter_mut().find(|c| {
+                    c.name == incoming.name
+                        && c.domain == incoming.domain
+                        && c.path == incoming.path
+                }) {
+                    *existing = incoming;
+                } else {
+                    browser_cookies.push(incoming);
+                }
             }
         }
         if let Some(ua) = response.solution.user_agent {
