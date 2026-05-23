@@ -174,6 +174,7 @@ impl From<ScrappeyCookie> for Cookie {
             path: Some(scr.path),
             domain: Some(scr.domain),
             secure: scr.secure,
+            http_only: scr.http_only,
             expiry: scr.expires,
             same_site: scr.same_site.and_then(|s| match s.to_lowercase().as_str() {
                 "lax" => Some(SameSite::Lax),

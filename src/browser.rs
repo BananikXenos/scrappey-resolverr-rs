@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
-use thirtyfour::{Proxy, extensions::cdp::ChromeDevTools, prelude::*};
+use thirtyfour::{Proxy, prelude::*};
 
 use crate::logging::{LogContext, TimingLogger, log_error_with_context};
 
@@ -183,7 +183,7 @@ impl Browser {
         ))?;
         caps.add_arg(&format!("--user-agent={}", self.data.user_agent))?;
         caps.add_arg("--disable-infobars")?;
-        caps.insert_browser_option("excludeSwitches", ["enable-automation"])?;
+        caps.set_browser_option("excludeSwitches", ["enable-automation"])?;
 
         // Always use the local proxy bridge (noauth) for outgoing requests
         debug!("Configuring proxy: {}", LOCAL_PROXY_ADDR);
@@ -209,15 +209,13 @@ impl Browser {
     async fn configure_cookies(&mut self, driver: &WebDriver) -> Result<()> {
         self.clean_expired_cookies();
 
-        let dev_tools = ChromeDevTools::new(driver.handle.clone());
-        dev_tools.execute_cdp("Network.enable").await?;
+        let cdp = driver.cdp();
+        cdp.network().enable().await?;
 
         for cookie in &self.data.cookies {
             let cookie_value = serde_json::to_value(cookie)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize cookie: {}", e))?;
-            dev_tools
-                .execute_cdp_with_params("Network.setCookie", cookie_value)
-                .await?;
+            cdp.send_raw("Network.setCookie", cookie_value).await?;
         }
 
         Ok(())
