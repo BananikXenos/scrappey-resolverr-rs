@@ -54,10 +54,13 @@ pub struct Response {
 }
 
 /// Main browser automation struct, encapsulating session data and configuration.
-#[derive(Clone)]
+///
+/// Holds a pooled `WebDriver` that lives across requests on the same session.
+/// Lazy-initialized on first navigation and quit on `shutdown()`.
 pub struct Browser {
     pub data: BrowserData,
     pub config: BrowserConfig,
+    driver: Option<WebDriver>,
 }
 
 impl Browser {
@@ -66,6 +69,7 @@ impl Browser {
         Browser {
             data: BrowserData::default(),
             config: BrowserConfig::default(),
+            driver: None,
         }
     }
 
@@ -73,6 +77,16 @@ impl Browser {
     pub fn with_config(mut self, config: BrowserConfig) -> Self {
         self.config = config;
         self
+    }
+
+    /// Quit the pooled WebDriver if one is alive. Called on session destroy
+    /// or expiry. Safe to call when no driver exists.
+    pub async fn shutdown(&mut self) {
+        if let Some(driver) = self.driver.take() {
+            if let Err(e) = driver.quit().await {
+                warn!("WebDriver quit failed during shutdown: {}", e);
+            }
+        }
     }
 
     /// Load browser session data (user agent, cookies) from a JSON file.
@@ -90,70 +104,59 @@ impl Browser {
         Ok(())
     }
 
-    /// Main navigation method: launches a browser, navigates to the URL, handles challenges, and extracts the response.
-    /// Ensures the driver is always quit, even on error.
+    /// Main navigation method: reuses the pooled WebDriver across requests on
+    /// the same session, lazy-creating it on first call. The driver is kept
+    /// alive between requests so cookie/UA state and any solved challenge
+    /// continue to apply without paying the Chrome cold-start cost.
     pub async fn get(&mut self, url: &str, timeout: u64) -> Result<Response> {
         let ctx = LogContext::new().with_url(url);
         let timing = TimingLogger::new("browser.get").with_url(url);
 
         ctx.debug(&format!("Starting navigation (timeout: {}s)", timeout));
 
-        let mut driver = match self.setup_driver().await {
-            Ok(d) => {
-                ctx.debug("WebDriver instance created");
-                d
-            }
-            Err(e) => {
-                ctx.error(&format!("Failed to create WebDriver: {}", e));
-                return Err(e);
-            }
-        };
-
-        // Use a closure to ensure driver.quit() is always called
-        let result = async {
-            ctx.debug(&format!(
-                "Configuring cookies ({} cookies)",
-                self.data.cookies.len()
-            ));
-            self.configure_cookies(&driver).await?;
-
-            ctx.debug("Navigating to URL");
-            driver.get(url).await?;
-
-            // Handle anti-bot challenges if present
-            if let Some(response) = self.handle_challenges(&mut driver, url, timeout).await? {
-                ctx.info("Challenge resolved via fallback");
-                return Ok(response);
-            }
-
-            ctx.debug("Extracting response");
-            let response = self.extract_response(&driver, url).await?;
-            Ok(response)
-        }
-        .await;
-
-        // Take screenshot on failure if enabled
-        if result.is_err() && self.config.screenshots.capture_failure_screenshots {
-            if let Err(screenshot_err) = self.capture_failure_screenshot(&driver, url).await {
-                ctx.warn(&format!(
-                    "Failed to capture failure screenshot: {}",
-                    screenshot_err
-                ));
-            } else {
-                ctx.debug("Failure screenshot captured");
+        // Ensure a live driver. If creation fails we don't cache anything.
+        if self.driver.is_none() {
+            match self.setup_driver().await {
+                Ok(d) => {
+                    ctx.debug("WebDriver instance created");
+                    self.driver = Some(d);
+                }
+                Err(e) => {
+                    ctx.error(&format!("Failed to create WebDriver: {}", e));
+                    return Err(e);
+                }
             }
         }
 
-        // Always attempt to quit the driver, even if result is Err
-        let quit_result = driver.quit().await;
-        if quit_result.is_err() {
-            ctx.warn("Failed to quit WebDriver cleanly");
+        // Drive the navigation. On a fatal error we tear down the cached
+        // driver so the next request can recreate it.
+        let result = self.navigate_once(url, timeout, &ctx).await;
+
+        if let Err(ref e) = result {
+            // Screenshot before any driver teardown so we still have a window.
+            if self.config.screenshots.capture_failure_screenshots {
+                if let Some(driver) = self.driver.as_ref() {
+                    if let Err(screenshot_err) = self.capture_failure_screenshot(driver, url).await
+                    {
+                        ctx.warn(&format!(
+                            "Failed to capture failure screenshot: {}",
+                            screenshot_err
+                        ));
+                    } else {
+                        ctx.debug("Failure screenshot captured");
+                    }
+                }
+            }
+
+            if is_driver_lost(e) {
+                ctx.warn("Driver appears lost; tearing down for next request");
+                self.shutdown().await;
+            }
         }
 
-        // Log timing and return result
         let duration = timing.finish_silent();
-        match (result, quit_result) {
-            (Ok(response), Ok(_)) => {
+        match result {
+            Ok(response) => {
                 ctx.info(&format!(
                     "Navigation successful (status: {}, {} bytes, {:.2}s)",
                     response.status,
@@ -162,15 +165,75 @@ impl Browser {
                 ));
                 Ok(response)
             }
-            (Err(e), _) => {
+            Err(e) => {
                 log_error_with_context(&ctx, &e);
                 Err(e)
             }
-            (_, Err(e)) => {
-                ctx.error(&format!("WebDriver quit failed: {}", e));
-                Err(e.into())
-            }
         }
+    }
+
+    /// Drive a single navigation against the pooled WebDriver.
+    /// Pulled out so `get` can wrap it with screenshot + recovery handling
+    /// without juggling the borrow on `self.driver`.
+    async fn navigate_once(&mut self, url: &str, timeout: u64, ctx: &LogContext) -> Result<Response> {
+        // Re-apply UA in case it changed (e.g. Scrappey fallback last request)
+        // and re-set cookies. Both are idempotent.
+        self.apply_user_agent().await?;
+
+        ctx.debug(&format!(
+            "Configuring cookies ({} cookies)",
+            self.data.cookies.len()
+        ));
+        self.configure_cookies().await?;
+
+        ctx.debug("Navigating to URL");
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("WebDriver missing during navigation"))?;
+        driver.get(url).await?;
+
+        // SAFETY of split borrow: handle_challenges needs &mut WebDriver while
+        // also touching self.data; take the driver out, work on it, put it back.
+        let mut driver = self
+            .driver
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("WebDriver vanished mid-request"))?;
+        let challenge_outcome = self.handle_challenges(&mut driver, url, timeout).await;
+        // Put the driver back even on error so we keep the session alive
+        // (or so `shutdown` later finds it and quits cleanly).
+        self.driver = Some(driver);
+
+        if let Some(response) = challenge_outcome? {
+            ctx.info("Challenge resolved via fallback");
+            return Ok(response);
+        }
+
+        ctx.debug("Extracting response");
+        let driver = self
+            .driver
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("WebDriver missing after challenges"))?;
+        let response = self.extract_response(&driver, url).await;
+        self.driver = Some(driver);
+        response
+    }
+
+    /// Apply the current session UA to the live driver via CDP override.
+    /// Lets us rotate UA (e.g. after a Scrappey fallback) without restarting
+    /// Chrome.
+    async fn apply_user_agent(&self) -> Result<()> {
+        let Some(driver) = self.driver.as_ref() else {
+            return Ok(());
+        };
+        let dev_tools = ChromeDevTools::new(driver.handle.clone());
+        dev_tools
+            .execute_cdp_with_params(
+                "Emulation.setUserAgentOverride",
+                serde_json::json!({ "userAgent": self.data.user_agent }),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Set up a new Chrome WebDriver instance with configured capabilities and proxy.
@@ -215,8 +278,12 @@ impl Browser {
 
     /// Set cookies in the browser using Chrome DevTools Protocol.
     /// Cleans expired cookies before setting.
-    async fn configure_cookies(&mut self, driver: &WebDriver) -> Result<()> {
+    async fn configure_cookies(&mut self) -> Result<()> {
         self.clean_expired_cookies();
+
+        let Some(driver) = self.driver.as_ref() else {
+            return Ok(());
+        };
 
         let dev_tools = ChromeDevTools::new(driver.handle.clone());
         dev_tools.execute_cdp("Network.enable").await?;
@@ -405,6 +472,21 @@ impl Browser {
 
         Ok(())
     }
+}
+
+/// Heuristic: did this error indicate the cached WebDriver session is dead
+/// (chromedriver crashed, session id invalidated, connection refused)?
+/// On true we drop the cached driver and let the next request recreate it.
+/// On false we keep the driver (challenge timeouts and similar are not
+/// reasons to throw away a working browser).
+fn is_driver_lost(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("invalid session id")
+        || msg.contains("session not created")
+        || msg.contains("connection refused")
+        || msg.contains("session deleted")
+        || msg.contains("disconnected: not connected to devtools")
+        || msg.contains("chrome not reachable")
 }
 
 /// Read the HTTP status of the current navigation via the Performance API.

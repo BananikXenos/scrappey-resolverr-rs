@@ -198,8 +198,9 @@ impl SessionManager {
         match handle {
             Some(handle) => {
                 // Wait for any in-flight request on this session to drain before
-                // we touch the on-disk state.
-                let session = handle.lock().await;
+                // we touch the on-disk state and tear down the pooled driver.
+                let mut session = handle.lock().await;
+                session.browser.shutdown().await;
                 session.save().ok();
                 if session.data_path.exists() {
                     std::fs::remove_file(&session.data_path).ok();
@@ -241,16 +242,25 @@ async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, SessionHandle>>>)
     }
 
     // Phase 2: remove from the map.
-    let mut sessions = sessions.write().await;
-    for id in expired_ids {
-        if let Some(handle) = sessions.remove(&id) {
-            if let Ok(session) = handle.try_lock() {
-                session.save().ok();
-                if session.data_path.exists() {
-                    std::fs::remove_file(&session.data_path).ok();
-                }
-            }
-            debug!("[session={}] Expired and cleaned up", id);
+    let handles: Vec<(String, SessionHandle)> = {
+        let mut sessions = sessions.write().await;
+        expired_ids
+            .into_iter()
+            .filter_map(|id| sessions.remove(&id).map(|h| (id, h)))
+            .collect()
+    };
+
+    // Phase 3: outside the map lock, shut down each driver and clean up disk.
+    // We use lock() (not try_lock) here because cleanup ran try_lock once
+    // already and saw they were free; if a request grabbed it between phases
+    // we just wait for that one to finish.
+    for (id, handle) in handles {
+        let mut session = handle.lock().await;
+        session.browser.shutdown().await;
+        session.save().ok();
+        if session.data_path.exists() {
+            std::fs::remove_file(&session.data_path).ok();
         }
+        debug!("[session={}] Expired and cleaned up", id);
     }
 }
