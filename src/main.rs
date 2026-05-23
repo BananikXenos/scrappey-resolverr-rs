@@ -15,8 +15,11 @@ use flaresolverr::FlareSolverrAPI;
 
 use crate::scrappey::ScrappeyClient;
 
-/// Default proxy bridge bind address
-const PROXY_BRIDGE_ADDR: &str = "0.0.0.0:8080";
+/// Default proxy bridge bind address. Loopback-only: Chrome inside the
+/// container/host shares the network namespace, so 127.0.0.1 is reachable
+/// and we avoid exposing an authenticated-proxy relay if port 8080 is ever
+/// mapped or the binary is run outside Docker.
+const PROXY_BRIDGE_ADDR: &str = "127.0.0.1:8080";
 
 /// Default chromedriver path
 const CHROMEDRIVER_PATH: &str = "/usr/bin/chromedriver";
