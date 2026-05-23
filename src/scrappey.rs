@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Scrappey API client and data structures for integrating with the Scrappey challenge-solving service.
 //! Provides GET/POST request wrappers, balance checking, and conversion utilities for cookies.
 
@@ -63,25 +61,6 @@ impl ScrappeyClient {
             .map_err(|e| anyhow::anyhow!("Failed to parse Scrappey response: {}", e))
     }
 
-    /// Make a POST request via Scrappey, using the provided parameters and timeout.
-    pub async fn post(&self, req: ScrappeyPostRequest, timeout: u64) -> Result<ScrappeyResponse> {
-        let mut payload = serde_json::to_value(&req)?
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("Failed to convert request to JSON object"))?
-            .clone();
-        payload.insert("cmd".to_string(), Value::String("request.post".to_string()));
-        let resp = self
-            .client
-            .post(format!("{}?key={}", self.endpoint, self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .timeout(std::time::Duration::from_secs(timeout))
-            .send()
-            .await?;
-        resp.json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse Scrappey response: {}", e))
-    }
 }
 
 /// Balance response from Scrappey API.
@@ -96,35 +75,6 @@ pub struct ScrappeyBalance {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScrappeyGetRequest {
     pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cookiejar: Option<Vec<ScrappeyCookie>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cookies: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proxy: Option<String>,
-    #[serde(rename = "proxyCountry", skip_serializing_if = "Option::is_none")]
-    pub proxy_country: Option<String>,
-    #[serde(rename = "customHeaders", skip_serializing_if = "Option::is_none")]
-    pub custom_headers: Option<HashMap<String, String>>,
-    #[serde(rename = "includeImages", skip_serializing_if = "Option::is_none")]
-    pub include_images: Option<bool>,
-    #[serde(rename = "includeLinks", skip_serializing_if = "Option::is_none")]
-    pub include_links: Option<bool>,
-    #[serde(rename = "requestType", skip_serializing_if = "Option::is_none")]
-    pub request_type: Option<String>,
-    #[serde(rename = "localStorage", skip_serializing_if = "Option::is_none")]
-    pub local_storage: Option<HashMap<String, String>>,
-}
-
-/// Parameters for Scrappey POST requests.
-/// Accepts post_data as either string or object, plus all GET options.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScrappeyPostRequest {
-    pub url: String,
-    #[serde(rename = "postData", skip_serializing_if = "Option::is_none")]
-    pub post_data: Option<Value>, // Accepts either string or object
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

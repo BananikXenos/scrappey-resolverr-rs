@@ -79,7 +79,6 @@ pub struct ScreenshotConfig {
     pub max_failure_screenshots: usize,
 }
 
-#[allow(dead_code)]
 impl ScreenshotConfig {
     pub fn new(
         capture_failure_screenshots: bool,
@@ -90,14 +89,6 @@ impl ScreenshotConfig {
             capture_failure_screenshots,
             screenshot_dir,
             max_failure_screenshots,
-        }
-    }
-
-    pub fn disabled() -> Self {
-        Self {
-            capture_failure_screenshots: false,
-            screenshot_dir: "/tmp".to_string(),
-            max_failure_screenshots: 10,
         }
     }
 }
@@ -119,13 +110,6 @@ pub struct WebDriverConfig {
     pub window_size: (u32, u32),
 }
 
-#[allow(dead_code)]
-impl WebDriverConfig {
-    pub fn new(url: String, window_size: (u32, u32)) -> Self {
-        Self { url, window_size }
-    }
-}
-
 impl Default for WebDriverConfig {
     fn default() -> Self {
         Self {
@@ -143,23 +127,6 @@ pub struct BrowserConfig {
     pub proxy: ProxyConfig,
     pub scrappey: ScrappeyConfig,
     pub screenshots: ScreenshotConfig,
-}
-
-#[allow(dead_code)]
-impl BrowserConfig {
-    pub fn new(
-        webdriver: WebDriverConfig,
-        proxy: ProxyConfig,
-        scrappey: ScrappeyConfig,
-        screenshots: ScreenshotConfig,
-    ) -> Self {
-        Self {
-            webdriver,
-            proxy,
-            scrappey,
-            screenshots,
-        }
-    }
 }
 
 /// API server configuration for the FlareSolverr-compatible server.
