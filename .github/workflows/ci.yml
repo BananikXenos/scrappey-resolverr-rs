@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [develop, main, master]
 
+# Tight default — individual jobs widen as needed.
+# Suppresses CodeQL "workflow does not contain permissions" warnings.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -17,8 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Nightly is required because the `transparent` crate's build.rs
+      # has `#![feature(exit_status_error)]` at crate level. See Dockerfile
+      # for the long-form explanation.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
 
@@ -37,6 +45,11 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # audit-check opens/comments issues for new advisories.
+      issues: write
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2.0.0
