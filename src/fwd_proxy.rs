@@ -111,7 +111,6 @@ impl HttpProxyBridge {
             }
         }
     }
-
 }
 
 /// Handle a single client connection.

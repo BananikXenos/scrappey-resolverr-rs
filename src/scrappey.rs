@@ -78,7 +78,6 @@ impl ScrappeyClient {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to parse Scrappey response: {}", e))
     }
-
 }
 
 /// Balance response from Scrappey API.

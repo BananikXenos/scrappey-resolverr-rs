@@ -13,7 +13,6 @@ mod session;
 use config::ServerConfig;
 use flaresolverr::FlareSolverrAPI;
 
-
 /// Default proxy bridge bind address. Loopback-only: Chrome inside the
 /// container/host shares the network namespace, so 127.0.0.1 is reachable
 /// and we avoid exposing an authenticated-proxy relay if port 8080 is ever
