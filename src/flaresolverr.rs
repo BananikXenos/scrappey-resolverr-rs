@@ -44,7 +44,7 @@ impl From<Cookie> for FlaresolverrCookie {
             domain: c.domain,
             path: c.path,
             expires: c.expiry.map_or(-1.0, |e| e as f64 / 1000.0),
-            http_only: false,
+            http_only: c.http_only.unwrap_or(false),
             secure: c.secure,
             same_site: c.same_site.map(|s| format!("{:?}", s)),
         }
@@ -73,6 +73,7 @@ impl From<FlaresolverrCookie> for Cookie {
             path: c.path,
             expiry,
             secure: c.secure,
+            http_only: Some(c.http_only),
             same_site,
         }
     }
