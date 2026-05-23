@@ -3,7 +3,8 @@
 use axum::{
     Router,
     extract::Json,
-    response::Json as ResponseJson,
+    http::StatusCode,
+    response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
 };
 use log::{debug, warn};
@@ -192,6 +193,9 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// URL of the local chromedriver instance probed by the health endpoint.
+const CHROMEDRIVER_STATUS_URL: &str = "http://127.0.0.1:9515/status";
+
 /// FlareSolverr API server.
 pub struct FlareSolverrAPI {
     session_manager: SessionManager,
@@ -222,11 +226,60 @@ async fn index() -> ResponseJson<IndexResponse> {
     })
 }
 
-async fn health() -> ResponseJson<HealthResponse> {
+async fn health() -> impl IntoResponse {
     debug!("Health check");
-    ResponseJson(HealthResponse {
-        status: STATUS_OK.to_string(),
-    })
+    match probe_chromedriver().await {
+        Ok(()) => (
+            StatusCode::OK,
+            ResponseJson(HealthResponse {
+                status: STATUS_OK.to_string(),
+            }),
+        ),
+        Err(reason) => {
+            warn!("Health check failed: {}", reason);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ResponseJson(HealthResponse {
+                    status: format!("chromedriver unhealthy: {}", reason),
+                }),
+            )
+        }
+    }
+}
+
+/// Probe chromedriver's /status and confirm it reports ready=true.
+async fn probe_chromedriver() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("client: {}", e))?;
+
+    let resp = client
+        .get(CHROMEDRIVER_STATUS_URL)
+        .send()
+        .await
+        .map_err(|e| format!("connect: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("status: {}", resp.status()));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse: {}", e))?;
+
+    let ready = body
+        .get("value")
+        .and_then(|v| v.get("ready"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !ready {
+        return Err("chromedriver reports not ready".to_string());
+    }
+
+    Ok(())
 }
 
 async fn v1_handler(Json(req): Json<V1Request>, sm: SessionManager) -> ResponseJson<V1Response> {
