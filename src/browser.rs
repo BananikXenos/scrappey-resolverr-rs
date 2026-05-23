@@ -15,8 +15,17 @@ use crate::config::BrowserConfig;
 /// Default local proxy bridge address for browser connections
 const LOCAL_PROXY_ADDR: &str = "127.0.0.1:8080";
 
-/// Default HTTP status code when status cannot be determined
+/// Default HTTP status code when the real status cannot be determined.
+/// Used as a fallback if the PerformanceNavigationTiming entry is missing.
 const DEFAULT_HTTP_STATUS: u16 = 200;
+
+/// JS snippet that returns the HTTP status of the current document navigation
+/// via the Performance API (PerformanceNavigationTiming.responseStatus, Chrome 102+).
+/// Returns null when unavailable (e.g. cross-origin same-document or older Chrome).
+const NAVIGATION_STATUS_JS: &str = r#"
+    var nav = performance.getEntriesByType('navigation')[0];
+    return nav && typeof nav.responseStatus === 'number' ? nav.responseStatus : null;
+"#;
 
 /// Stores browser session data such as user agent and cookies.
 /// This struct is serializable for persistence between runs.
@@ -294,10 +303,13 @@ impl Browser {
         self.data.cookies = cookies.clone();
 
         let body = driver.source().await?;
+        let status = read_navigation_status(driver)
+            .await
+            .unwrap_or(DEFAULT_HTTP_STATUS);
 
         Ok(Response {
             url: url.to_string(),
-            status: DEFAULT_HTTP_STATUS, // thirtyfour doesn't provide status, assuming success
+            status,
             body,
             cookies,
             user_agent: self.data.user_agent.clone(),
@@ -393,4 +405,17 @@ impl Browser {
 
         Ok(())
     }
+}
+
+/// Read the HTTP status of the current navigation via the Performance API.
+/// Returns None when the navigation entry is missing or doesn't expose
+/// `responseStatus` (e.g. cross-origin redirects, pre-Chrome-102 fallback).
+async fn read_navigation_status(driver: &WebDriver) -> Option<u16> {
+    let value = driver
+        .execute(NAVIGATION_STATUS_JS, vec![])
+        .await
+        .ok()?
+        .json()
+        .clone();
+    value.as_u64().and_then(|n| u16::try_from(n).ok())
 }
