@@ -2,11 +2,11 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::browser::Browser;
@@ -86,9 +86,14 @@ impl Session {
     }
 }
 
+/// Type alias for the shared, per-session lock. Holding this serializes
+/// concurrent requests against the same session id so cookie/UA updates
+/// can't clobber each other.
+pub type SessionHandle = Arc<Mutex<Session>>;
+
 /// Thread-safe session manager.
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     config: BrowserConfig,
     data_dir: PathBuf,
     _cleanup_handle: Arc<tokio::task::JoinHandle<()>>,
@@ -117,7 +122,10 @@ impl SessionManager {
                 .expect("Failed to create default session");
 
         let mut sessions = HashMap::new();
-        sessions.insert(DEFAULT_SESSION_ID.to_string(), default_session);
+        sessions.insert(
+            DEFAULT_SESSION_ID.to_string(),
+            Arc::new(Mutex::new(default_session)),
+        );
         let sessions = Arc::new(RwLock::new(sessions));
 
         info!("[session={}] Default session preloaded", DEFAULT_SESSION_ID);
@@ -152,7 +160,10 @@ impl SessionManager {
         let session = Session::new(self.config.clone(), &self.data_dir, ttl_minutes, None)?;
         let id = session.id.clone();
 
-        self.sessions.write().await.insert(id.clone(), session);
+        self.sessions
+            .write()
+            .await
+            .insert(id.clone(), Arc::new(Mutex::new(session)));
         info!(
             "[session={}] Created (TTL: {})",
             id,
@@ -161,16 +172,11 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// Execute a function with a mutable session reference.
-    pub async fn with_session<F, R>(&self, id: &str, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut Session) -> R,
-    {
-        let mut sessions = self.sessions.write().await;
-        sessions.get_mut(id).map(|session| {
-            session.touch();
-            f(session)
-        })
+    /// Look up a session by id and return its shared handle.
+    /// Callers should `.lock().await` the handle for the duration of any work
+    /// against the session so concurrent requests on the same id serialize.
+    pub async fn get_session(&self, id: &str) -> Option<SessionHandle> {
+        self.sessions.read().await.get(id).cloned()
     }
 
     /// List all active session IDs.
@@ -184,9 +190,16 @@ impl SessionManager {
             anyhow::bail!("Cannot destroy the default session");
         }
 
-        let mut sessions = self.sessions.write().await;
-        match sessions.remove(id) {
-            Some(session) => {
+        let handle = {
+            let mut sessions = self.sessions.write().await;
+            sessions.remove(id)
+        };
+
+        match handle {
+            Some(handle) => {
+                // Wait for any in-flight request on this session to drain before
+                // we touch the on-disk state.
+                let session = handle.lock().await;
                 session.save().ok();
                 if session.data_path.exists() {
                     std::fs::remove_file(&session.data_path).ok();
@@ -197,32 +210,45 @@ impl SessionManager {
             None => anyhow::bail!("Session not found: {}", id),
         }
     }
-
-    /// Save all sessions to disk.
-    #[allow(dead_code)]
-    pub async fn save_all(&self) {
-        for session in self.sessions.read().await.values() {
-            if let Err(e) = session.save() {
-                warn!("Failed to save session {}: {e}", session.id);
-            }
-        }
-    }
 }
 
 /// Clean up expired sessions (excluding default).
-async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, Session>>>) {
-    let mut sessions = sessions.write().await;
-    let expired: Vec<_> = sessions
-        .iter()
-        .filter(|(id, s)| *id != DEFAULT_SESSION_ID && s.is_expired())
-        .map(|(id, _)| id.clone())
-        .collect();
+async fn cleanup_expired(sessions: &Arc<RwLock<HashMap<String, SessionHandle>>>) {
+    // Phase 1: snapshot ids+handles under the read lock so we can probe
+    // expiry without blocking new lookups.
+    let candidates: Vec<(String, SessionHandle)> = {
+        let sessions = sessions.read().await;
+        sessions
+            .iter()
+            .filter(|(id, _)| *id != DEFAULT_SESSION_ID)
+            .map(|(id, handle)| (id.clone(), Arc::clone(handle)))
+            .collect()
+    };
 
-    for id in expired {
-        if let Some(session) = sessions.remove(&id) {
-            session.save().ok();
-            if session.data_path.exists() {
-                std::fs::remove_file(&session.data_path).ok();
+    let mut expired_ids = Vec::new();
+    for (id, handle) in candidates {
+        // try_lock so we don't block on a session that's mid-request; if
+        // it's busy we'll re-check on the next sweep.
+        if let Ok(session) = handle.try_lock() {
+            if session.is_expired() {
+                expired_ids.push(id);
+            }
+        }
+    }
+
+    if expired_ids.is_empty() {
+        return;
+    }
+
+    // Phase 2: remove from the map.
+    let mut sessions = sessions.write().await;
+    for id in expired_ids {
+        if let Some(handle) = sessions.remove(&id) {
+            if let Ok(session) = handle.try_lock() {
+                session.save().ok();
+                if session.data_path.exists() {
+                    std::fs::remove_file(&session.data_path).ok();
+                }
             }
             debug!("[session={}] Expired and cleaned up", id);
         }

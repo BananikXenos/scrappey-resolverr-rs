@@ -257,43 +257,38 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
     let session_id = sm.resolve_session_id(req.session.as_deref());
     let is_default = session_id == DEFAULT_SESSION_ID;
 
-    // Get browser from session
-    let browser_result = sm
-        .with_session(&session_id, |session| {
-            session.browser.config.webdriver.window_size = (1280, 720);
-
-            // Only load from disk for non-default sessions
-            if !is_default {
-                session.load().ok();
-            }
-
-            debug!(
-                "[session={}] Using session ({} cookies)",
-                session_id,
-                session.browser.data.cookies.len()
-            );
-
-            session.browser.clone()
-        })
-        .await;
-
-    let mut browser = match browser_result {
-        Some(b) => b,
+    let handle = match sm.get_session(&session_id).await {
+        Some(h) => h,
         None => return V1Response::error(&format!("Session not found: {}", session_id)),
     };
 
-    // Navigate and solve challenge
-    match browser.get(&url, timeout.into()).await {
-        Ok(response) => {
-            // Save session data
-            sm.with_session(&session_id, |session| {
-                session.browser.data = browser.data.clone();
-                if let Err(e) = session.save() {
-                    warn!("[session={}] Failed to save: {}", session_id, e);
-                }
-            })
-            .await;
+    // Hold the per-session lock for the whole request so concurrent calls
+    // on the same session id serialize cleanly (no cookie/UA clobber).
+    let mut session = handle.lock().await;
+    session.touch();
+    session.browser.config.webdriver.window_size = (1280, 720);
 
+    // Only load from disk for non-default sessions; default was preloaded.
+    if !is_default {
+        session.load().ok();
+    }
+
+    debug!(
+        "[session={}] Using session ({} cookies)",
+        session_id,
+        session.browser.data.cookies.len()
+    );
+
+    let nav_result = session.browser.get(&url, timeout.into()).await;
+
+    // Save session state regardless of success/failure so partial cookies
+    // from a failed challenge attempt are not lost.
+    if let Err(e) = session.save() {
+        warn!("[session={}] Failed to save: {}", session_id, e);
+    }
+
+    match nav_result {
+        Ok(response) => {
             let solution = Solution {
                 url: response.url,
                 status: response.status,
@@ -315,16 +310,7 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
                 .with_solution(solution)
                 .with_session(session_id)
         }
-        Err(e) => {
-            // Save data even on error
-            sm.with_session(&session_id, |session| {
-                session.browser.data = browser.data.clone();
-                session.save().ok();
-            })
-            .await;
-
-            V1Response::error(&format!("Challenge failed: {}", e))
-        }
+        Err(e) => V1Response::error(&format!("Challenge failed: {}", e)),
     }
 }
 
