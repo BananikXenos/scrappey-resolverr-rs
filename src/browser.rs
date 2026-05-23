@@ -76,7 +76,7 @@ impl Browser {
     }
 
     /// Load browser session data (user agent, cookies) from a JSON file.
-    pub fn load_data(&mut self, path: &str) -> Result<()> {
+    pub fn load_data(&mut self, path: impl AsRef<std::path::Path>) -> Result<()> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         self.data = serde_json::from_reader(reader)?;
@@ -84,7 +84,7 @@ impl Browser {
     }
 
     /// Save browser session data (user agent, cookies) to a JSON file.
-    pub fn save_data(&self, path: &str) -> Result<()> {
+    pub fn save_data(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, &self.data)?;
         Ok(())

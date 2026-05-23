@@ -41,7 +41,7 @@ impl Session {
 
         let mut browser = Browser::new().with_config(config);
         if data_path.exists() {
-            if let Err(e) = browser.load_data(data_path.to_str().unwrap()) {
+            if let Err(e) = browser.load_data(&data_path) {
                 debug!("Could not load session data for {}: {e}", id);
             }
         }
@@ -73,13 +73,13 @@ impl Session {
         if let Some(parent) = self.data_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        self.browser.save_data(self.data_path.to_str().unwrap())
+        self.browser.save_data(&self.data_path)
     }
 
     /// Load session data from disk.
     pub fn load(&mut self) -> Result<()> {
         if self.data_path.exists() {
-            self.browser.load_data(self.data_path.to_str().unwrap())
+            self.browser.load_data(&self.data_path)
         } else {
             Ok(())
         }
