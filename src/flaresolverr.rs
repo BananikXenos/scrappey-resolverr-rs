@@ -354,7 +354,6 @@ async fn handle_get(req: V1Request, sm: &SessionManager) -> V1Response {
     // on the same session id serialize cleanly (no cookie/UA clobber).
     let mut session = handle.lock().await;
     session.touch();
-    session.browser.config.webdriver.window_size = (1280, 720);
 
     // Only load from disk for non-default sessions; default was preloaded.
     if !is_default {

@@ -100,7 +100,11 @@ impl Default for WebDriverConfig {
     fn default() -> Self {
         Self {
             url: "http://localhost:9515".to_string(),
-            window_size: (1920, 1080),
+            // 1280x720 is small enough that Cloudflare/JS challenges treat
+            // the browser as "normal viewport" and large enough that
+            // content lays out as expected. Keep in sync with the previous
+            // per-request override in flaresolverr.rs.
+            window_size: (1280, 720),
         }
     }
 }
