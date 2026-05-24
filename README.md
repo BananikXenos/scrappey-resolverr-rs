@@ -1,5 +1,19 @@
 # scrappey-resolverr-rs 🚀🦀
 
+> [!WARNING]
+> **This project is deprecated and the repository is archived.**
+>
+> The successor is **[chaser-resolverr-rs](https://github.com/synsejse/chaser-resolverr-rs)** — a Rust FlareSolverr-compatible API backed by an in-process [chaser-cf](https://github.com/0xchasercat/chaser-cf) (vendored + patched). It drops the Scrappey paid-credits dependency and the inbound-port requirement for proxy egress, ships as a single Docker image, and exposes a richer `/health`. Sessions, wire format, and Prowlarr/Sonarr compatibility are preserved.
+>
+> Pointers for migrators:
+> * Drop `SCRAPPEY_API_KEY` — no upstream paid service involved.
+> * `docker compose up -d` against `ghcr.io/synsejse/chaser-resolverr-rs:main`.
+> * Same `/v1`, `/health`, `/` endpoints.
+>
+> This repo will not receive further updates.
+
+---
+
 A high-performance, Rust-based, FlareSolverr-compatible API for bypassing anti-bot challenges (Cloudflare, DDoS-Guard, etc.) using a headful Chrome browser running inside a virtual display (via `transparent` and `xvfb-run`), with Scrappey fallback and built-in authenticated HTTP proxy bridging.
 
 ---
